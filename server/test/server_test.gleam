@@ -222,35 +222,44 @@ pub fn one_room_per_cell_test() {
 }
 
 pub fn image_prompt_test() {
-  // A line in the current form is used as written, after the style.
-  let room =
+  // Room pictures are establishing shots: style, then the setting only,
+  // whichever form the picture line was stored in.
+  let setting_only =
+    types.Room(..room_with(1, []), picture: "A quay at dusk, barges moored.")
+  assert art.image_prompt(setting_only)
+    == art.style <> ". A quay at dusk, barges moored."
+  let close_up_form =
     types.Room(
-      ..room_with(1, []),
-      picture: "Close-up of a brass key, large in the foreground. Behind: a quay.",
+      ..room_with(2, []),
+      picture: "Close-up of a brass key, large in the foreground. Behind: a quay at dusk.",
     )
-  assert art.image_prompt(room)
-    == art.style
-    <> ". Close-up of a brass key, large in the foreground. Behind: a quay."
-  // The earlier "setting. In the foreground: items." form becomes a close-up.
-  let older =
+  assert art.image_prompt(close_up_form) == art.style <> ". a quay at dusk."
+  let foreground_form =
     types.Room(
       ..room_with(3, []),
       picture: "A quay at dusk. In the foreground: brass key, rope.",
     )
-  assert art.image_prompt(older)
-    == art.style
-    <> ". Close-up of brass key and rope, large in the foreground. Behind: A quay at dusk."
-  // No line at all: composed from the stored facts.
-  let oldest =
+  assert art.image_prompt(foreground_form) == art.style <> ". A quay at dusk."
+  // No line at all: the place and its first few details.
+  let none =
     types.Room(
-      ..room_with(2, []),
+      ..room_with(4, []),
       name: "The Quay",
       features: ["wet stones", "moored barges", "gulls", "rope coils"],
       items: ["brass key"],
     )
-  assert art.image_prompt(oldest)
+  assert art.image_prompt(none)
+    == art.style <> ". The Quay: wet stones, moored barges, gulls."
+}
+
+pub fn closeup_prompt_test() {
+  // The thing alone and large; the room only as a blurred hint.
+  let room = types.Room(..room_with(1, []), name: "The Quay")
+  let key =
+    store.Examinable("item-7", "brass key", "a small tarnished brass key.")
+  assert art.closeup_prompt(room, key)
     == art.style
-    <> ". Close-up of brass key, large in the foreground. Behind: The Quay: wet stones, moored barges, gulls."
+    <> ". Close-up of a small tarnished brass key, centered, filling the frame, finely detailed. Softly blurred background: The Quay."
 }
 
 pub fn first_sentence_test() {

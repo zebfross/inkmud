@@ -91,7 +91,7 @@ button, input { font: inherit; color: inherit; }
 }
 @keyframes develop { from { opacity: 0; filter: blur(6px) sepia(.6); } to { opacity: 1; filter: none; } }
 @keyframes breathe { 50% { opacity: .55; } }
-figcaption { margin-top: .6rem; font-size: 1.15rem; font-weight: 600; }
+.art figcaption { margin-top: .6rem; font-size: 1.15rem; font-weight: 600; }
 .place-name { display: block; }
 .caption-buttons { display: flex; gap: .4rem; }
 .more-button, .send, .for-touch, .glimpse-float { display: none; }
@@ -138,6 +138,17 @@ figcaption { margin-top: .6rem; font-size: 1.15rem; font-weight: 600; }
 .system { color: var(--ink-soft); font: 14px/1.5 "IBM Plex Mono", monospace; }
 .echo { color: var(--accent); font: 14px/1.5 "IBM Plex Mono", monospace; margin-top: 1rem; }
 .waiting { color: var(--ink-faint); font-style: italic; animation: breathe 2s ease-in-out infinite; }
+/* Close-ups of examined things, in the story. */
+.closeup { margin: .2rem 0 1rem; max-width: 300px; }
+.closeup img {
+  display: block; width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 3px;
+  box-shadow: 0 4px 16px var(--shadow); animation: develop 1.4s ease-out;
+}
+.closeup figcaption {
+  margin-top: .35rem; font: 12px/1.4 "IBM Plex Mono", monospace; letter-spacing: .06em;
+  color: var(--ink-faint); text-transform: lowercase; display: block;
+}
+@media (max-width: 760px) { .closeup { max-width: 70%; } }
 .prompt {
   display: flex; align-items: center; gap: .5rem; border-top: 1px solid var(--rule);
   padding: .8rem 0 .2rem;
@@ -173,7 +184,7 @@ figcaption { margin-top: .6rem; font-size: 1.15rem; font-weight: 600; }
   .art { position: relative; }
   .picture { aspect-ratio: auto; height: 32vh; height: 32dvh; border-radius: 0; box-shadow: none; transition: height .25s ease; }
   .picture.pending { border: 0; border-bottom: 1px dashed var(--rule); }
-  figcaption {
+  .art figcaption {
     position: absolute; left: 0; right: 0; bottom: 0; margin: 0;
     padding: 2.5rem 16px 10px; align-items: flex-end;
     background: linear-gradient(to top, var(--paper) 15%, transparent);
@@ -228,7 +239,7 @@ figcaption { margin-top: .6rem; font-size: 1.15rem; font-weight: 600; }
 }
 
 /* Map */
-figcaption { display: flex; justify-content: space-between; align-items: flex-end; gap: .5rem; }
+.art figcaption { display: flex; justify-content: space-between; align-items: flex-end; gap: .5rem; }
 .map-button { font-size: .85rem; padding: .2rem .7rem; }
 .map-overlay {
   position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column;

@@ -75,7 +75,10 @@ browser (Lustre) ──websocket──▶ Gleam server
 - **Free-form input** is translated by the fast model into one command from
   the fixed set (`go`, `look`, `examine`, `take`, `drop`, `inventory`, `say`,
   `help`), or refused. Typed commands skip the model entirely.
-- **Art prompts come from stored room facts, never player text.**
+- **Art prompts come from stored room facts, never player text.** A room's
+  picture is an establishing shot of the place. Examining an item, something
+  you carry or a visible detail draws a close-up of just that thing (from the
+  item's plain physical "look"), shown in the story and kept for next time.
 
 ## Configuration
 

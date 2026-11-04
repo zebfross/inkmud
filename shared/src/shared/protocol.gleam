@@ -163,6 +163,8 @@ pub type ServerMsg {
   Line(tone: Tone, text: String)
   /// The picture for a room is ready.
   Art(room_id: Int, url: String)
+  /// A close-up of something just examined (`name`), to show in the story.
+  Closeup(name: String, url: String)
   /// Work is under way that the player is waiting on (a room being built).
   Busy(text: String)
   Inventory(items: List(String))
@@ -238,6 +240,12 @@ pub fn encode_server(msg: ServerMsg) -> String {
         #("t", json.string("line")),
         #("tone", json.string(tone_name(tone))),
         #("text", json.string(text)),
+      ])
+    Closeup(name:, url:) ->
+      json.object([
+        #("t", json.string("closeup")),
+        #("name", json.string(name)),
+        #("url", json.string(url)),
       ])
     Art(room_id:, url:) ->
       json.object([
@@ -424,6 +432,11 @@ pub fn decode_server(text: String) -> Result(ServerMsg, Nil) {
         use tone <- decode.field("tone", tone_decoder())
         use text <- decode.field("text", decode.string)
         decode.success(Line(tone:, text:))
+      }
+      "closeup" -> {
+        use name <- decode.field("name", decode.string)
+        use url <- decode.field("url", decode.string)
+        decode.success(Closeup(name:, url:))
       }
       "art" -> {
         use room_id <- decode.field("room", decode.int)

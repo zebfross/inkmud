@@ -171,6 +171,13 @@ fn invent(
       }
     Ok(id) -> {
       store.set_picture(store, id, proposal.picture)
+      // What each item plainly looks like, for its close-up when examined.
+      list.each(proposal.items, fn(item) {
+        case list.key_find(proposal.looks, item) {
+          Ok(look) if look != "" -> store.set_item_look(store, id, item, look)
+          _ -> Nil
+        }
+      })
       store.save_build_debug(store, id, prompt, build_log)
       // Joining last: until these run, nobody can walk into a half-written
       // room. Then the neighbours: an unbuilt exit of theirs pointing here
@@ -604,23 +611,16 @@ fn non_empty(s: String) -> Bool {
   s != ""
 }
 
-/// The picture line as stored: the first sentence of what the model wrote
-/// (the setting; later sentences are where a 3B model invents lockets,
-/// vendors and salmon), capped at 30 words, then every item, added by code,
-/// in the foreground. With no usable line, it's composed from the facts.
+/// The picture line as stored: the setting only (an establishing shot of
+/// the place), being the first sentence of what the model wrote, capped at
+/// 30 words; later sentences are where a 3B model invents lockets, vendors
+/// and salmon. Items are drawn separately, up close, when examined.
 fn complete_picture(p: Proposal) -> String {
-  let setting = case first_sentence(p.picture, 30) {
+  case first_sentence(p.picture, 30) {
     "" -> setting_from(p.name, p.features)
     setting -> setting
   }
-  let things =
-    list.map(p.items, fn(item) {
-      case list.key_find(p.looks, item) {
-        Ok(look) if look != "" -> look
-        _ -> item
-      }
-    })
-  close_up(things, setting)
+  <> "."
 }
 
 /// Up to the first full stop (or `max_words` words, whichever is shorter).
@@ -642,52 +642,10 @@ pub fn first_sentence(text: String, max_words: Int) -> String {
   }
 }
 
-/// A picture line from stored facts (also used by the art for rooms built
-/// before pictures existed): the place, its first few details, its items.
-pub fn compose_picture(
-  name: String,
-  features: List(String),
-  items: List(String),
-) -> String {
-  close_up(items, setting_from(name, features))
-}
-
 fn setting_from(name: String, features: List(String)) -> String {
   case list.take(features, 3) {
     [] -> name
     details -> name <> ": " <> string.join(details, ", ")
-  }
-}
-
-/// The picture line: what you can pick up, large and first ("Close-up of a
-/// brass key and a leather-bound journal, large in the foreground"), then
-/// the place behind them. Listed as names after the setting, items were
-/// usually not drawn; framed as a close-up, they dominate the picture.
-pub fn close_up(things: List(String), setting: String) -> String {
-  let setting = strip_stop(string.trim(setting))
-  case things {
-    [] -> setting <> "."
-    _ ->
-      "Close-up of "
-      <> and_list(things)
-      <> ", large in the foreground. Behind: "
-      <> setting
-      <> "."
-  }
-}
-
-fn and_list(things: List(String)) -> String {
-  case list.reverse(things) {
-    [] -> ""
-    [only] -> only
-    [last, ..rest] -> string.join(list.reverse(rest), ", ") <> " and " <> last
-  }
-}
-
-fn strip_stop(text: String) -> String {
-  case string.ends_with(text, ".") {
-    True -> string.drop_end(text, 1)
-    False -> text
   }
 }
 

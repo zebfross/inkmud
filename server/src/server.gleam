@@ -45,6 +45,7 @@ pub fn main() -> Nil {
       fast:,
       start_room:,
       dev_tools: config.dev_tools,
+      art: art_queue,
     )
 
   let assert Ok(_) =

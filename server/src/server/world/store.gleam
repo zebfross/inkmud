@@ -2,6 +2,7 @@
 //// once written, is never regenerated — later visitors read the same rows.
 
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -47,6 +48,11 @@ create table if not exists players (
   name text primary key,
   room_id integer not null references rooms(id)
 );
+create table if not exists closeups (
+  key text primary key,
+  url text not null,
+  prompt text not null
+);
 create table if not exists room_debug (
   room_id integer primary key references rooms(id),
   builder_prompt text not null default '',
@@ -69,21 +75,25 @@ pub fn open(path: String) -> Store {
   // columns to older databases. Rooms without them are placed at startup
   // (see `rooms_without_cell`). NULLs don't collide in a unique index.
   [
-    #("x", "integer"),
-    #("y", "integer"),
-    #("z", "integer"),
-    #("picture", "text"),
+    #("rooms", "x", "integer"),
+    #("rooms", "y", "integer"),
+    #("rooms", "z", "integer"),
+    #("rooms", "picture", "text"),
+    #("items", "looks", "text not null default ''"),
   ]
   |> list.each(fn(column) {
-    case has_column(conn, "rooms", column.0) {
+    let #(table, name, kind) = column
+    case has_column(conn, table, name) {
       True -> Nil
       False -> {
         let assert Ok(Nil) =
           sqlight.exec(
-            "alter table rooms add column "
-              <> column.0
+            "alter table "
+              <> table
+              <> " add column "
+              <> name
               <> " "
-              <> column.1
+              <> kind
               <> ";",
             conn,
           )
@@ -121,7 +131,7 @@ pub fn wipe_and(store: Store, seed: fn(Store) -> Int) -> Int {
   exec(
     store,
     "begin;
-    delete from room_debug; delete from visits; delete from items; delete from players; delete from exits;
+    delete from closeups; delete from room_debug; delete from visits; delete from items; delete from players; delete from exits;
     delete from rooms; delete from regions;
     delete from sqlite_sequence;
     commit;",
@@ -726,4 +736,92 @@ pub fn load_debug(store: Store, room_id: Int) -> RoomDebug {
     Ok([debug]) -> debug
     _ -> RoomDebug("", [], None, None)
   }
+}
+
+// CLOSE-UPS (examine draws the thing itself) ----------------------------------
+
+/// Something that can be examined up close: an item (in a room or carried)
+/// or one of a room's visual details.
+pub type Examinable {
+  Examinable(
+    /// Stable key for its saved close-up: "item-<id>" follows an item
+    /// wherever it's carried; "detail-<room>-<n>" stays with the room.
+    key: String,
+    name: String,
+    /// Plain physical description for the image model.
+    looks: String,
+  )
+}
+
+/// Record what an item plainly looks like (from the room builder).
+pub fn set_item_look(
+  store: Store,
+  room_id: Int,
+  name: String,
+  looks: String,
+) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "update items set looks = ? where room_id = ? and name = ?",
+      store,
+      [sqlight.text(looks), sqlight.int(room_id), sqlight.text(name)],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+/// The items in a room and those a player carries, with their looks.
+pub fn examinable_items(
+  store: Store,
+  room_id: Int,
+  player: String,
+) -> List(Examinable) {
+  let row = {
+    use id <- decode.field(0, decode.int)
+    use name <- decode.field(1, decode.string)
+    use looks <- decode.field(2, decode.string)
+    decode.success(
+      Examinable(key: "item-" <> int.to_string(id), name:, looks: case looks {
+        "" -> name
+        _ -> looks
+      }),
+    )
+  }
+  sqlight.query(
+    "select id, name, looks from items where room_id = ? or holder = ? order by holder is null desc, id",
+    store,
+    [sqlight.int(room_id), sqlight.text(player)],
+    row,
+  )
+  |> result.unwrap([])
+}
+
+pub fn closeup_url(store: Store, key: String) -> Option(String) {
+  case
+    sqlight.query(
+      "select url from closeups where key = ?",
+      store,
+      [sqlight.text(key)],
+      decode.field(0, decode.string, decode.success),
+    )
+  {
+    Ok([url]) -> Some(url)
+    _ -> None
+  }
+}
+
+pub fn set_closeup(
+  store: Store,
+  key: String,
+  url: String,
+  prompt: String,
+) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "insert or replace into closeups (key, url, prompt) values (?, ?, ?)",
+      store,
+      [sqlight.text(key), sqlight.text(url), sqlight.text(prompt)],
+      decode.success(Nil),
+    )
+  Nil
 }

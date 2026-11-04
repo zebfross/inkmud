@@ -279,7 +279,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           // A new room: draw it now, so the picture is usually there before
           // anyone is. (An exit that joined an existing room needs none.)
           case built.new, store.load_room(state.store, built.room_id) {
-            True, Ok(new_room) -> art.prepare(state.art, new_room)
+            True, Ok(new_room) -> art.prepare(state.art, state.store, new_room)
             _, _ -> Nil
           }
           Arrived(built.room_id)

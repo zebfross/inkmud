@@ -243,7 +243,7 @@ fn request_art(state: State) -> State {
   case state.room.art_url, state.art_requested {
     None, False -> {
       let self = state.self
-      art.request(state.art, state.room, fn(url) {
+      art.request(state.art, state.store, state.room, fn(url) {
         process.send(self, ArtReady(url))
       })
       State(..state, art_requested: True)

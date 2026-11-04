@@ -34,6 +34,7 @@ pub type Deps {
     fast: Client,
     start_room: Int,
     dev_tools: Bool,
+    art: Subject(art.Message),
   )
 }
 
@@ -48,6 +49,8 @@ pub type Event {
   WasReplaced
   /// Close the connection (shortly after being replaced).
   Retire
+  /// Background work that already sent what it had to say.
+  Quiet
 }
 
 type Session {
@@ -340,9 +343,22 @@ fn run(session: Session, cmd: Command, interpreted: Bool, conn) -> Session {
       tell_room(room.LookToward(name, d))
       session
     }
+    // The words first, then (if it's something really here) a close-up of
+    // it, drawn once and kept: the room's picture shows the place, examining
+    // shows the thing.
     command.Examine(thing) -> {
+      let self = session.self
+      let deps = session.deps
       background(session, fn(room_data, inventory) {
-        Out(examine(session.deps.fast, room_data, inventory, thing))
+        process.send(self, Out(examine(deps.fast, room_data, inventory, thing)))
+        case find_examinable(deps.store, room_data, name, thing) {
+          Some(found) ->
+            art.closeup(deps.art, deps.store, room_data, found, fn(url) {
+              process.send(self, Out(protocol.Closeup(found.name, url)))
+            })
+          None -> Nil
+        }
+        Quiet
       })
       session
     }
@@ -387,7 +403,7 @@ fn background(session: Session, work: fn(Room, List(String)) -> Event) -> Nil {
 fn on_event(session: Session, event: Event, conn) -> Session {
   case event {
     // Handled in the socket handler, which closes the connection.
-    WasReplaced | Retire -> session
+    WasReplaced | Retire | Quiet -> session
     // A room view sent just before the player left that room arrives
     // after they're somewhere else. It's stale: drop it.
     Out(protocol.Room(view)) if view.id != session.room_id -> session
@@ -578,4 +594,47 @@ fn map_view(deps: Deps, name: String, current: Int) -> protocol.MapView {
       })
       |> list.unique,
   )
+}
+
+// CLOSE-UPS -------------------------------------------------------------------
+
+/// What "examine <thing>" refers to, if it's really here: an item in the
+/// room or carried, or one of the room's visual details. Matched by exact
+/// name, or by every word asked for appearing in its name.
+fn find_examinable(
+  store: Store,
+  room_data: Room,
+  player: String,
+  query: String,
+) -> Option(store.Examinable) {
+  let details =
+    list.index_map(room_data.features, fn(feature, i) {
+      store.Examinable(
+        key: "detail-" <> int.to_string(room_data.id) <> "-" <> int.to_string(i),
+        name: feature,
+        looks: feature,
+      )
+    })
+  let candidates =
+    list.append(store.examinable_items(store, room_data.id, player), details)
+  let q =
+    query
+    |> string.lowercase
+    |> string.trim
+  let words =
+    string.split(q, " ")
+    |> list.filter(fn(w) {
+      string.length(w) > 2 && !list.contains(["the", "and", "with"], w)
+    })
+  let exact = list.find(candidates, fn(c) { string.lowercase(c.name) == q })
+  case exact, words {
+    Ok(found), _ -> Some(found)
+    Error(Nil), [] -> None
+    Error(Nil), _ ->
+      list.find(candidates, fn(c) {
+        let name = string.lowercase(c.name)
+        list.all(words, string.contains(name, _))
+      })
+      |> option.from_result
+  }
 }

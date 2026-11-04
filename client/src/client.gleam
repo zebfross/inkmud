@@ -74,6 +74,9 @@ type Kind {
   System
   Echo
   Waiting
+  /// A close-up of something examined: the picture's URL; the entry's text
+  /// is what it shows.
+  Picture(url: String)
 }
 
 type Entry {
@@ -151,6 +154,7 @@ type Msg {
   PressHeld(Int)
   PressEnd
   PressCancel
+  Scrolled
   Noop
   Glimpse(protocol.ExitView)
   Unglimpse
@@ -291,6 +295,7 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     DebugKey(_) -> #(model, effect.none())
     ToggleMore -> #(Model(..model, more_open: !model.more_open), effect.none())
     Noop -> #(model, effect.none())
+    Scrolled -> #(model, scroll())
     ExitTap(direction) ->
       case model.held {
         // The tap at the end of a hold: it was a look, not a step.
@@ -500,6 +505,7 @@ fn receive(model: Model, msg: ServerMsg) -> #(Model, Effect(Msg)) {
         _ -> #(model, effect.none())
       }
     protocol.Busy(text) -> #(add(model, Waiting, text), scroll())
+    protocol.Closeup(name, url) -> #(add(model, Picture(url), name), scroll())
     protocol.Inventory(items) -> #(
       Model(..model, inventory: items),
       effect.none(),
@@ -861,6 +867,16 @@ fn view_log_entries(entries: List(Entry)) -> Element(Msg) {
         System -> html.p([class("entry system")], [text(entry.text)])
         Echo -> html.p([class("entry echo")], [text("› " <> entry.text)])
         Waiting -> html.p([class("entry waiting")], [text(entry.text)])
+        Picture(url) ->
+          html.figure([class("entry closeup")], [
+            html.img([
+              attribute.src(url),
+              attribute.alt(entry.text),
+              // Scroll once it has a size, or it lands below the fold.
+              event.on("load", decode.success(Scrolled)),
+            ]),
+            html.figcaption([], [text(entry.text)]),
+          ])
       }
     }),
   )
