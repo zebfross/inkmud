@@ -26,6 +26,8 @@ type Proposal {
   Proposal(
     name: String,
     description: String,
+    /// What the picture shows (see `types.Room.picture`).
+    picture: String,
     features: List(String),
     items: List(String),
     exits: List(#(String, String)),
@@ -164,6 +166,7 @@ fn invent(
         None -> panic as "room insert failed with the cell still empty"
       }
     Ok(id) -> {
+      store.set_picture(store, id, proposal.picture)
       // Joining last: until these run, nobody can walk into a half-written
       // room. Then the neighbours: an unbuilt exit of theirs pointing here
       // now leads here; one we gave a way out toward gets a way back.
@@ -241,6 +244,7 @@ fn prompt(
   <> "\nReply with JSON only, in exactly this shape:\n"
   <> "{\"name\": \"2-5 word place name\", "
   <> "\"description\": \"2-4 sentences, second person present tense\", "
+  <> "\"picture\": \"one plain sentence, under 25 words, describing what a painting of this place shows (the place itself, its light and its main features); nothing that isn't in the description\", "
   <> "\"features\": [\"3-5 short visual details\"], "
   <> "\"items\": [\"0-2 small portable objects lying here, each a short name of 1-4 words such as 'brass key'\"], "
   <> "\"exits\": [{\"direction\": \"north|south|east|west|up|down\", \"hint\": \"short phrase: what you see of that way out\"}]}"
@@ -310,23 +314,24 @@ fn attempt(
                     <> proposal.name
                     <> "\" is already a place in the city; choose a different name",
                   )
-                _, [] -> proposal
-                _, missing if left > 1 ->
+                _, [_, ..] if left > 1 ->
                   retry(
                     "the description doesn't mention "
                     <> string.join(missing, ", ")
                     <> " by name; mention each item in the description, or drop it",
                   )
-                // Last try: keep only what the text actually shows. (A name
-                // that's still taken is set apart by `unique_name`.)
-                _, _ ->
-                  Proposal(
-                    ..proposal,
-                    items: list.filter(proposal.items, mentions(
+                // Accept. On the last try, keep only items the description
+                // shows (a name still taken is set apart by `unique_name`).
+                // The picture line is trimmed and the items added by code.
+                _, _ -> {
+                  let items =
+                    list.filter(proposal.items, mentions(
                       proposal.description,
                       _,
-                    )),
-                  )
+                    ))
+                  let proposal = Proposal(..proposal, items:)
+                  Proposal(..proposal, picture: complete_picture(proposal))
+                }
               }
             }
             Error(reason) -> retry(reason)
@@ -365,6 +370,11 @@ fn parse(text: String, back: Direction) -> Result(Proposal, String) {
   let decoder = {
     use name <- decode.field("name", decode.string)
     use description <- decode.field("description", decode.string)
+    use picture <- decode.optional_field(
+      "picture",
+      "",
+      decode.one_of(decode.string, [decode.success("")]),
+    )
     use features <- decode.optional_field("features", [], strings)
     use items <- decode.optional_field("items", [], strings)
     use exits <- decode.optional_field(
@@ -372,7 +382,14 @@ fn parse(text: String, back: Direction) -> Result(Proposal, String) {
       [],
       decode.list(exit) |> decode.map(result.values),
     )
-    decode.success(Proposal(name:, description:, features:, items:, exits:))
+    decode.success(Proposal(
+      name:,
+      description:,
+      picture:,
+      features:,
+      items:,
+      exits:,
+    ))
   }
   use p <- result.try(
     json.parse(text, decoder)
@@ -407,6 +424,7 @@ fn parse(text: String, back: Direction) -> Result(Proposal, String) {
   Ok(Proposal(
     name:,
     description:,
+    picture: clean(p.picture, 400),
     features: p.features
       |> list.map(clean(_, 120))
       |> list.filter(non_empty)
@@ -528,10 +546,74 @@ fn non_empty(s: String) -> Bool {
   s != ""
 }
 
+/// The picture line as stored: the first sentence of what the model wrote
+/// (the setting; later sentences are where a 3B model invents lockets,
+/// vendors and salmon), capped at 30 words, then every item, added by code,
+/// in the foreground. With no usable line, it's composed from the facts.
+fn complete_picture(p: Proposal) -> String {
+  case first_sentence(p.picture, 30) {
+    "" -> compose_picture(p.name, p.features, p.items)
+    setting ->
+      case p.items {
+        [] -> end_sentence(setting)
+        items -> end_sentence(setting) <> " " <> foreground(items)
+      }
+  }
+}
+
+/// Up to the first full stop (or `max_words` words, whichever is shorter).
+pub fn first_sentence(text: String, max_words: Int) -> String {
+  let sentence = case string.split_once(string.trim(text), ". ") {
+    Ok(#(first, _)) -> first
+    Error(Nil) -> string.trim(text)
+  }
+  sentence
+  |> string.split(" ")
+  |> list.filter(non_empty)
+  |> list.take(max_words)
+  |> string.join(" ")
+  |> fn(s) {
+    case string.ends_with(s, ".") {
+      True -> string.drop_end(s, 1)
+      False -> s
+    }
+  }
+}
+
+/// A picture line from stored facts (also used by the art for rooms built
+/// before pictures existed): the place, its first few details, its items.
+pub fn compose_picture(
+  name: String,
+  features: List(String),
+  items: List(String),
+) -> String {
+  let setting = case list.take(features, 3) {
+    [] -> name
+    details -> name <> ": " <> string.join(details, ", ")
+  }
+  case items {
+    [] -> end_sentence(setting)
+    _ -> end_sentence(setting) <> " " <> foreground(items)
+  }
+}
+
+fn foreground(items: List(String)) -> String {
+  "In the foreground: " <> string.join(items, ", ") <> "."
+}
+
+fn end_sentence(text: String) -> String {
+  let text = string.trim(text)
+  case string.ends_with(text, ".") {
+    True -> text
+    False -> text <> "."
+  }
+}
+
 fn fallback() -> Proposal {
   Proposal(
     name: "A Fog-Choked Passage",
     description: "The fog here is so thick you can barely see your own hands. Damp stone walls press close on either side, and the only sound is water dripping somewhere ahead.",
+    picture: "A narrow passage between damp stone walls, almost lost in thick fog.",
     features: ["thick fog", "damp stone walls", "dripping water"],
     items: [],
     exits: [],

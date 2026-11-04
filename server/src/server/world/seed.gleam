@@ -95,5 +95,10 @@ pub fn run(store: Store) -> Int {
       // The centre of the city's grid.
       #(0, 0, 0),
     )
+  store.set_picture(
+    store,
+    start,
+    "A foggy square where four cobbled streets meet beneath a towering cast-iron gas lamp with amber glass, a ladder leaning on it. In the foreground: lamplighter's hooked pole, tin of lamp oil.",
+  )
   start
 }

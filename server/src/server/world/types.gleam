@@ -32,6 +32,10 @@ pub type Room {
     items: List(String),
     exits: List(Exit),
     art_url: Option(String),
+    /// What the room's picture shows: one or two sentences written with the
+    /// description, naming every item, so the art matches the text. Empty for
+    /// rooms built before this existed (the art composes one from the facts).
+    picture: String,
     /// Grid position, fixed when the room is built: x east, y south, z up.
     /// One room per cell; the room beyond an exit is always one step away.
     x: Int,

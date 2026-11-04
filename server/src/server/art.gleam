@@ -21,7 +21,7 @@ import gleam/otp/actor
 import gleam/result
 import gleam/string
 import logging
-import server/llm.{type Client}
+import server/world/builder
 import server/world/store.{type Store}
 import server/world/types.{type Room}
 import simplifile
@@ -31,7 +31,7 @@ import simplifile
 /// Keep it to medium and era: anything about *place* ("city", "street",
 /// "fog") here outweighs the room's own subject, and every room comes out
 /// as the same gaslit street.
-pub const style = "ink and watercolor illustration, Victorian era, 19th century, muted palette, dramatic lighting"
+pub const style = "Ink and watercolor illustration, Victorian era, muted palette, dramatic lighting"
 
 pub type Message {
   /// `urgent`: someone is standing in the room; draw it before rooms that
@@ -48,7 +48,6 @@ type State {
   State(
     self: Subject(Message),
     store: Store,
-    client: Client,
     image_api: String,
     art_dir: String,
     waiting: Dict(Int, List(fn(String) -> Nil)),
@@ -62,7 +61,6 @@ type State {
 
 pub fn start(
   store: Store,
-  client: Client,
   image_api: String,
   art_dir: String,
 ) -> Subject(Message) {
@@ -72,7 +70,6 @@ pub fn start(
       State(
         self:,
         store:,
-        client:,
         image_api:,
         art_dir:,
         waiting: dict.new(),
@@ -198,14 +195,11 @@ fn next(state: State) -> State {
   case state.drawing, state.queue {
     Some(_), _ | _, [] -> state
     None, [room, ..rest] -> {
-      let State(self:, store:, client:, image_api:, art_dir:, generation:, ..) =
-        state
+      let State(self:, store:, image_api:, art_dir:, generation:, ..) = state
       let pid =
         process.spawn_unlinked(fn() {
           let result =
-            exception.rescue(fn() {
-              draw(store, client, image_api, art_dir, room)
-            })
+            exception.rescue(fn() { draw(store, image_api, art_dir, room) })
             |> result.replace_error(Nil)
             |> result.flatten
           process.send(self, Done(generation, room.id, result))
@@ -217,12 +211,11 @@ fn next(state: State) -> State {
 
 fn draw(
   store: Store,
-  client: Client,
   image_api: String,
   art_dir: String,
   room: Room,
 ) -> Result(String, Nil) {
-  let prompt = image_prompt(client, room) <> ", " <> style
+  let prompt = image_prompt(room)
   logging.log(
     logging.Info,
     "drawing room " <> int.to_string(room.id) <> ": " <> prompt,
@@ -272,57 +265,29 @@ fn draw(
 
 /// A short visual prompt from the room's facts. Falls back to the facts
 /// themselves if the model doesn't answer.
-fn image_prompt(client: Client, room: Room) -> String {
-  let facts = string.join(list.append(room.features, room.items), ", ")
-  // Not the whole setting guide: a small model copies its "what exists" list
-  // straight into the prompt, and every room comes out the same. The era is
-  // pinned by `style`; this only needs to keep modern things out.
-  let ask =
-    "Write a short image-generation prompt (max 30 words, comma-separated visual details of this one place, no character names, no story, no quotes). The place is in a Victorian-era gaslamp city; never mention modern objects. Reply with the prompt only.\nPlace: "
-    <> room.name
-    <> "\nDescription: "
-    <> room.description
-    <> "\nVisible: "
-    <> facts
-    <> "\nPrompt:"
-  case
-    llm.generate(
-      client,
-      llm.Ask(..llm.ask(ask), temperature: 0.4, timeout: 30_000),
-    )
-  {
-    Ok(text) ->
-      case clean_prompt(text) {
-        "" -> room.name <> ", " <> facts
-        prompt -> prompt
-      }
-    Error(Nil) -> room.name <> ", " <> facts
+/// The image prompt, in order of importance: the style (so it's never cut
+/// off: the image model reads only its first 77 tokens), then the items in
+/// the foreground (the model weighs early words most, and these are what a
+/// player can pick up — placed last, they were usually not drawn), then the
+/// setting. Built from the stored picture line ("setting. In the foreground:
+/// items."); rooms from before pictures existed get one composed from their
+/// facts. No model rewrites it: a 3B rewrite ignored length limits, buried
+/// the items in long lists and invented things that weren't there.
+pub fn image_prompt(room: Room) -> String {
+  let picture = case string.trim(room.picture) {
+    "" -> builder.compose_picture(room.name, room.features, room.items)
+    picture -> picture
+  }
+  case string.split_once(picture, " In the foreground: ") {
+    Ok(#(setting, items)) ->
+      style <> ". In the foreground: " <> strip_stop(items) <> ". " <> setting
+    Error(Nil) -> style <> ". " <> picture
   }
 }
 
-/// The model's reply, minus chatter: "Here is a short prompt for X:" lines,
-/// quotes, and anything past the first real line.
-pub fn clean_prompt(reply: String) -> String {
-  let preamble = fn(line: String) {
-    let lower = string.lowercase(line)
-    string.ends_with(line, ":")
-    || string.starts_with(lower, "here is")
-    || string.starts_with(lower, "here's")
-    || string.starts_with(lower, "sure")
+fn strip_stop(text: String) -> String {
+  case string.ends_with(text, ".") {
+    True -> string.drop_end(text, 1)
+    False -> text
   }
-  let line =
-    reply
-    |> string.split("\n")
-    |> list.map(string.trim)
-    |> list.filter(fn(l) { l != "" })
-    |> list.map(fn(l) {
-      // "Here is a prompt for X: actual, prompt" on one line.
-      case preamble(l), string.split_once(l, ":") {
-        True, Ok(#(_, after)) -> string.trim(after)
-        _, _ -> l
-      }
-    })
-    |> list.find(fn(l) { l != "" && !preamble(l) })
-    |> result.unwrap("")
-  line |> string.replace("\"", "") |> string.slice(0, 300)
 }

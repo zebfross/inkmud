@@ -60,6 +60,13 @@ class LocalBackend:
         self.generate("a lantern", 0)  # warm-up
 
     def generate(self, prompt: str, seed: int) -> bytes:
+        # The text encoders read 77 tokens (75 + start/end markers); the rest
+        # is silently dropped. The game puts the style first so only the end
+        # of the description can be lost; say when that happens.
+        ids = self.pipe.tokenizer(prompt, add_special_tokens=False).input_ids
+        if len(ids) > 75:
+            lost = self.pipe.tokenizer.decode(ids[75:])
+            print(f"[imagegen] prompt is {len(ids)} tokens; not seen: {lost!r}", flush=True)
         generator = self.torch.Generator("cpu").manual_seed(seed)
         image = self.pipe(
             prompt=prompt,

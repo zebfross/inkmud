@@ -60,13 +60,23 @@ pub fn open(path: String) -> Store {
   // Grid coordinates arrived after the first worlds were built: add the
   // columns to older databases. Rooms without them are placed at startup
   // (see `rooms_without_cell`). NULLs don't collide in a unique index.
-  list.each(["x", "y", "z"], fn(column) {
-    case has_column(conn, "rooms", column) {
+  [
+    #("x", "integer"),
+    #("y", "integer"),
+    #("z", "integer"),
+    #("picture", "text"),
+  ]
+  |> list.each(fn(column) {
+    case has_column(conn, "rooms", column.0) {
       True -> Nil
       False -> {
         let assert Ok(Nil) =
           sqlight.exec(
-            "alter table rooms add column " <> column <> " integer;",
+            "alter table rooms add column "
+              <> column.0
+              <> " "
+              <> column.1
+              <> ";",
             conn,
           )
         Nil
@@ -185,12 +195,21 @@ pub fn load_room(store: Store, id: Int) -> Result(Room, Nil) {
     use x <- decode.field(5, decode.optional(decode.int))
     use y <- decode.field(6, decode.optional(decode.int))
     use z <- decode.field(7, decode.optional(decode.int))
-    decode.success(#(region, name, description, features, art_url, #(x, y, z)))
+    use picture <- decode.field(8, decode.optional(decode.string))
+    decode.success(#(
+      region,
+      name,
+      description,
+      features,
+      art_url,
+      #(x, y, z),
+      option.unwrap(picture, ""),
+    ))
   }
   use row <- result.try(
     case
       sqlight.query(
-        "select region_id, name, description, features, art_url, x, y, z from rooms where id = ?",
+        "select region_id, name, description, features, art_url, x, y, z, picture from rooms where id = ?",
         store,
         [sqlight.int(id)],
         decoder,
@@ -200,7 +219,7 @@ pub fn load_room(store: Store, id: Int) -> Result(Room, Nil) {
       _ -> Error(Nil)
     },
   )
-  let #(region, name, description, features, art_url, #(x, y, z)) = row
+  let #(region, name, description, features, art_url, #(x, y, z), picture) = row
   Ok(Room(
     id:,
     region:,
@@ -210,6 +229,7 @@ pub fn load_room(store: Store, id: Int) -> Result(Room, Nil) {
     items: room_items(store, id),
     exits: exits(store, id),
     art_url:,
+    picture:,
     // Only rooms from before coordinates existed lack them, and those are
     // placed at startup before anyone plays.
     x: option.unwrap(x, 0),
@@ -409,6 +429,17 @@ pub fn art_url(store: Store, room_id: Int) -> Option(String) {
     Ok([url]) -> url
     _ -> None
   }
+}
+
+pub fn set_picture(store: Store, room_id: Int, picture: String) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "update rooms set picture = ? where id = ?",
+      store,
+      [sqlight.text(picture), sqlight.int(room_id)],
+      decode.success(Nil),
+    )
+  Nil
 }
 
 pub fn set_art(store: Store, room_id: Int, url: String) -> Nil {

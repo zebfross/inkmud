@@ -36,8 +36,7 @@ pub fn main() -> Nil {
   place_unplaced_rooms(store, start_room)
   let fast = llm.client(config.model, llm.Fast)
   let builder = llm.client(config.model, llm.Builder)
-  let art_queue =
-    art.start(store, fast, config.image_api_base_url, config.art_dir)
+  let art_queue = art.start(store, config.image_api_base_url, config.art_dir)
   let world = world.start(store, builder, art_queue)
   let deps =
     session.Deps(

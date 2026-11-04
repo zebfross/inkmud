@@ -115,6 +115,7 @@ fn room_with(id: Int, exits: List(#(types.Direction, Int))) -> types.Room {
     items: [],
     exits: list.map(exits, fn(e) { Exit(e.0, "", "r", Some(e.1)) }),
     art_url: None,
+    picture: "",
     x: 0,
     y: 0,
     z: 0,
@@ -220,15 +221,42 @@ pub fn one_room_per_cell_test() {
   assert store.room_at(db, #(0, 0, 0)) == Some(1)
 }
 
-pub fn clean_prompt_test() {
-  assert art.clean_prompt(
-      "Here is a short image-generation prompt for Shuttered Shops Alley:\n\nnarrow gaslit lane, shuttered shops",
+pub fn image_prompt_test() {
+  // Style first (never cut off), then the room's own picture line.
+  let room =
+    types.Room(
+      ..room_with(1, []),
+      picture: "A quay at dusk. In the foreground a brass key.",
     )
-    == "narrow gaslit lane, shuttered shops"
-  assert art.clean_prompt(
-      "Here's a prompt for the quay: wet stone quay, moored barges",
+  assert art.image_prompt(room)
+    == art.style <> ". A quay at dusk. In the foreground a brass key."
+  // Items go right after the style, ahead of the setting.
+  let ordered =
+    types.Room(
+      ..room_with(3, []),
+      picture: "A quay at dusk. In the foreground: brass key, rope.",
     )
-    == "wet stone quay, moored barges"
-  assert art.clean_prompt("\"flooded cellar, floating crates\"")
-    == "flooded cellar, floating crates"
+  assert art.image_prompt(ordered)
+    == art.style <> ". In the foreground: brass key, rope. A quay at dusk."
+  // A room from before pictures: composed from its facts, items included.
+  let old =
+    types.Room(
+      ..room_with(2, []),
+      name: "The Quay",
+      features: ["wet stones", "moored barges", "gulls", "rope coils"],
+      items: ["brass key"],
+    )
+  assert art.image_prompt(old)
+    == art.style
+    <> ". In the foreground: brass key. The Quay: wet stones, moored barges, gulls."
+}
+
+pub fn first_sentence_test() {
+  assert builder.first_sentence(
+      "A dimly lit street with a worn stone bellway. A vendor sells salmon.",
+      30,
+    )
+    == "A dimly lit street with a worn stone bellway"
+  assert builder.first_sentence("one two three four five", 3) == "one two three"
+  assert builder.first_sentence("", 30) == ""
 }
