@@ -22,7 +22,6 @@ import gleam/result
 import gleam/string
 import logging
 import server/llm.{type Client}
-import server/world/seed
 import server/world/store.{type Store}
 import server/world/types.{type Room}
 import simplifile
@@ -54,8 +53,9 @@ type State {
     art_dir: String,
     waiting: Dict(Int, List(fn(String) -> Nil)),
     queue: List(Room),
-    /// The drawing in progress, so a reset can stop it.
-    drawing: Option(Pid),
+    /// The drawing in progress: its room, and its process so a reset can
+    /// stop it.
+    drawing: Option(#(Int, Pid)),
     generation: Int,
   )
 }
@@ -116,7 +116,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           State(
             ..state,
             waiting: dict.insert(state.waiting, room.id, [notify, ..others]),
-            queue: case urgent {
+            // Urgent and only queued: move it up. Already being drawn:
+            // leave the queue alone, or it would be drawn twice.
+            queue: case
+              urgent
+              && state.drawing |> option.map(fn(d) { d.0 }) != Some(room.id)
+            {
               True -> [
                 room,
                 ..list.filter(state.queue, fn(r) { r.id != room.id })
@@ -154,7 +159,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
     Reset(reply) -> {
       case state.drawing {
-        Some(pid) -> process.kill(pid)
+        Some(#(_, pid)) -> process.kill(pid)
         None -> Nil
       }
       case simplifile.read_directory(state.art_dir) {
@@ -205,7 +210,7 @@ fn next(state: State) -> State {
             |> result.flatten
           process.send(self, Done(generation, room.id, result))
         })
-      State(..state, queue: rest, drawing: Some(pid))
+      State(..state, queue: rest, drawing: Some(#(room.id, pid)))
     }
   }
 }
@@ -269,10 +274,11 @@ fn draw(
 /// themselves if the model doesn't answer.
 fn image_prompt(client: Client, room: Room) -> String {
   let facts = string.join(list.append(room.features, room.items), ", ")
+  // Not the whole setting guide: a small model copies its "what exists" list
+  // straight into the prompt, and every room comes out the same. The era is
+  // pinned by `style`; this only needs to keep modern things out.
   let ask =
-    "Setting: "
-    <> seed.setting
-    <> "\n\nWrite a short image-generation prompt (max 30 words, comma-separated visual details, no character names, no story, no quotes) for this place. Keep every detail true to the setting's era; never mention modern objects.\nPlace: "
+    "Write a short image-generation prompt (max 30 words, comma-separated visual details of this one place, no character names, no story, no quotes). The place is in a Victorian-era gaslamp city; never mention modern objects. Reply with the prompt only.\nPlace: "
     <> room.name
     <> "\nDescription: "
     <> room.description
@@ -286,11 +292,37 @@ fn image_prompt(client: Client, room: Room) -> String {
     )
   {
     Ok(text) ->
-      case string.split(string.trim(text), "\n") {
-        [line, ..] if line != "" ->
-          line |> string.replace("\"", "") |> string.slice(0, 300)
-        _ -> room.name <> ", " <> facts
+      case clean_prompt(text) {
+        "" -> room.name <> ", " <> facts
+        prompt -> prompt
       }
     Error(Nil) -> room.name <> ", " <> facts
   }
+}
+
+/// The model's reply, minus chatter: "Here is a short prompt for X:" lines,
+/// quotes, and anything past the first real line.
+pub fn clean_prompt(reply: String) -> String {
+  let preamble = fn(line: String) {
+    let lower = string.lowercase(line)
+    string.ends_with(line, ":")
+    || string.starts_with(lower, "here is")
+    || string.starts_with(lower, "here's")
+    || string.starts_with(lower, "sure")
+  }
+  let line =
+    reply
+    |> string.split("\n")
+    |> list.map(string.trim)
+    |> list.filter(fn(l) { l != "" })
+    |> list.map(fn(l) {
+      // "Here is a prompt for X: actual, prompt" on one line.
+      case preamble(l), string.split_once(l, ":") {
+        True, Ok(#(_, after)) -> string.trim(after)
+        _, _ -> l
+      }
+    })
+    |> list.find(fn(l) { l != "" && !preamble(l) })
+    |> result.unwrap("")
+  line |> string.replace("\"", "") |> string.slice(0, 300)
 }

@@ -57,7 +57,39 @@ pub fn open(path: String) -> Store {
   let assert Ok(conn) = sqlight.open(path)
   let assert Ok(Nil) = sqlight.exec("pragma journal_mode = wal;", conn)
   let assert Ok(Nil) = sqlight.exec(schema, conn)
+  // Grid coordinates arrived after the first worlds were built: add the
+  // columns to older databases. Rooms without them are placed at startup
+  // (see `rooms_without_cell`). NULLs don't collide in a unique index.
+  list.each(["x", "y", "z"], fn(column) {
+    case has_column(conn, "rooms", column) {
+      True -> Nil
+      False -> {
+        let assert Ok(Nil) =
+          sqlight.exec(
+            "alter table rooms add column " <> column <> " integer;",
+            conn,
+          )
+        Nil
+      }
+    }
+  })
+  let assert Ok(Nil) =
+    sqlight.exec(
+      "create unique index if not exists rooms_cell on rooms (x, y, z);",
+      conn,
+    )
   conn
+}
+
+fn has_column(conn: Store, table: String, column: String) -> Bool {
+  sqlight.query(
+    "select name from pragma_table_info(?)",
+    conn,
+    [sqlight.text(table)],
+    decode.field(0, decode.string, decode.success),
+  )
+  |> result.unwrap([])
+  |> list.contains(column)
 }
 
 pub fn exec(store: Store, sql: String) -> Nil {
@@ -150,12 +182,15 @@ pub fn load_room(store: Store, id: Int) -> Result(Room, Nil) {
     use description <- decode.field(2, decode.string)
     use features <- decode.field(3, decode.string)
     use art_url <- decode.field(4, decode.optional(decode.string))
-    decode.success(#(region, name, description, features, art_url))
+    use x <- decode.field(5, decode.optional(decode.int))
+    use y <- decode.field(6, decode.optional(decode.int))
+    use z <- decode.field(7, decode.optional(decode.int))
+    decode.success(#(region, name, description, features, art_url, #(x, y, z)))
   }
   use row <- result.try(
     case
       sqlight.query(
-        "select region_id, name, description, features, art_url from rooms where id = ?",
+        "select region_id, name, description, features, art_url, x, y, z from rooms where id = ?",
         store,
         [sqlight.int(id)],
         decoder,
@@ -165,7 +200,7 @@ pub fn load_room(store: Store, id: Int) -> Result(Room, Nil) {
       _ -> Error(Nil)
     },
   )
-  let #(region, name, description, features, art_url) = row
+  let #(region, name, description, features, art_url, #(x, y, z)) = row
   Ok(Room(
     id:,
     region:,
@@ -175,7 +210,80 @@ pub fn load_room(store: Store, id: Int) -> Result(Room, Nil) {
     items: room_items(store, id),
     exits: exits(store, id),
     art_url:,
+    // Only rooms from before coordinates existed lack them, and those are
+    // placed at startup before anyone plays.
+    x: option.unwrap(x, 0),
+    y: option.unwrap(y, 0),
+    z: option.unwrap(z, 0),
   ))
+}
+
+/// The room at a grid cell, if one has been built there.
+pub fn room_at(store: Store, cell: types.Cell) -> Option(Int) {
+  let #(x, y, z) = cell
+  case
+    sqlight.query(
+      "select id from rooms where x = ? and y = ? and z = ?",
+      store,
+      [sqlight.int(x), sqlight.int(y), sqlight.int(z)],
+      decode.field(0, decode.int, decode.success),
+    )
+  {
+    Ok([id]) -> Some(id)
+    _ -> None
+  }
+}
+
+/// Ids of rooms that have no coordinates yet (built before they existed).
+pub fn rooms_without_cell(store: Store) -> List(Int) {
+  sqlight.query(
+    "select id from rooms where x is null order by id",
+    store,
+    [],
+    decode.field(0, decode.int, decode.success),
+  )
+  |> result.unwrap([])
+}
+
+pub fn all_room_ids(store: Store) -> List(Int) {
+  sqlight.query(
+    "select id from rooms order by id",
+    store,
+    [],
+    decode.field(0, decode.int, decode.success),
+  )
+  |> result.unwrap([])
+}
+
+pub fn set_cell(store: Store, room_id: Int, cell: types.Cell) -> Nil {
+  let #(x, y, z) = cell
+  let assert Ok(_) =
+    sqlight.query(
+      "update rooms set x = ?, y = ?, z = ? where id = ?",
+      store,
+      [sqlight.int(x), sqlight.int(y), sqlight.int(z), sqlight.int(room_id)],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+/// Give a room a new way out (one it didn't have when built), unless it
+/// already has one in that direction.
+pub fn add_exit(store: Store, room_id: Int, e: NewExit) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "insert or ignore into exits (room_id, direction, hint, target_region, target_id) values (?, ?, ?, ?, ?)",
+      store,
+      [
+        sqlight.int(room_id),
+        sqlight.text(types.direction_name(e.direction)),
+        sqlight.text(e.hint),
+        sqlight.text(e.target_region),
+        sqlight.nullable(sqlight.int, e.target),
+      ],
+      decode.success(Nil),
+    )
+  Nil
 }
 
 fn exits(store: Store, room_id: Int) -> List(Exit) {
@@ -208,7 +316,9 @@ pub type NewExit {
   )
 }
 
-/// Write a new room with its exits and items, returning its id.
+/// Write a new room at `cell` with its exits and items, returning its id.
+/// `Error(Nil)` if another room already holds that cell (two builds raced
+/// for it): nothing is written, and the caller should use that room.
 pub fn insert_room(
   store: Store,
   region: String,
@@ -217,19 +327,30 @@ pub fn insert_room(
   features: List(String),
   items: List(String),
   new_exits: List(NewExit),
-) -> Int {
-  let assert Ok([id]) =
-    sqlight.query(
-      "insert into rooms (region_id, name, description, features) values (?, ?, ?, ?) returning id",
-      store,
-      [
-        sqlight.text(region),
-        sqlight.text(name),
-        sqlight.text(description),
-        sqlight.text(string.join(features, "\n")),
-      ],
-      decode.field(0, decode.int, decode.success),
-    )
+  cell: types.Cell,
+) -> Result(Int, Nil) {
+  let #(x, y, z) = cell
+  use id <- result.try(
+    case
+      sqlight.query(
+        "insert into rooms (region_id, name, description, features, x, y, z) values (?, ?, ?, ?, ?, ?, ?) returning id",
+        store,
+        [
+          sqlight.text(region),
+          sqlight.text(name),
+          sqlight.text(description),
+          sqlight.text(string.join(features, "\n")),
+          sqlight.int(x),
+          sqlight.int(y),
+          sqlight.int(z),
+        ],
+        decode.field(0, decode.int, decode.success),
+      )
+    {
+      Ok([id]) -> Ok(id)
+      _ -> Error(Nil)
+    },
+  )
   list.each(new_exits, fn(e) {
     let assert Ok(_) =
       sqlight.query(
@@ -256,7 +377,7 @@ pub fn insert_room(
       )
     Nil
   })
-  id
+  Ok(id)
 }
 
 /// Point an unbuilt exit at the room built for it. Only fills an empty

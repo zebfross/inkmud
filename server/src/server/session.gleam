@@ -479,7 +479,8 @@ fn map_view(deps: Deps, name: String, current: Int) -> protocol.MapView {
     store.regions(deps.store)
     |> list.map(fn(r) { #(r.id, r.name) })
     |> dict.from_list
-  let placed = map.layout(rooms, [deps.start_room, current])
+  // Rooms carry their own grid positions now; the map just reads them.
+  let placed = list.map(rooms, fn(r) { map.Placed(r, r.x, r.y, r.z) })
   protocol.MapView(
     current:,
     rooms: list.map(placed, fn(p) {

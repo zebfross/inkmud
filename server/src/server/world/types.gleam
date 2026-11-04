@@ -32,7 +32,32 @@ pub type Room {
     items: List(String),
     exits: List(Exit),
     art_url: Option(String),
+    /// Grid position, fixed when the room is built: x east, y south, z up.
+    /// One room per cell; the room beyond an exit is always one step away.
+    x: Int,
+    y: Int,
+    z: Int,
   )
+}
+
+pub type Cell =
+  #(Int, Int, Int)
+
+pub fn cell(room: Room) -> Cell {
+  #(room.x, room.y, room.z)
+}
+
+/// The cell one step from `cell` in direction `d`.
+pub fn step(cell: Cell, d: Direction) -> Cell {
+  let #(x, y, z) = cell
+  case d {
+    North -> #(x, y - 1, z)
+    South -> #(x, y + 1, z)
+    East -> #(x + 1, y, z)
+    West -> #(x - 1, y, z)
+    Up -> #(x, y, z + 1)
+    Down -> #(x, y, z - 1)
+  }
 }
 
 pub type Direction {

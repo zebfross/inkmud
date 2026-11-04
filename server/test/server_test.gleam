@@ -2,12 +2,16 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleeunit
+import server/art
 import server/command.{
   Drop, Examine, Go, Inventory, Look, LookToward, Say, Take, Unknown,
 }
+import server/llm
 import server/world/builder
 import server/world/map
 import server/world/room
+import server/world/seed
+import server/world/store
 import server/world/types.{Down, East, Exit, North, Up, West}
 
 pub fn main() -> Nil {
@@ -97,6 +101,8 @@ pub fn unique_name_test() {
       "lower quay",
     ])
     == "Upper Quay"
+  assert builder.unique_name("A Fog-Choked Passage", ["a fog-choked passage"])
+    == "Lower Fog-Choked Passage"
 }
 
 fn room_with(id: Int, exits: List(#(types.Direction, Int))) -> types.Room {
@@ -109,6 +115,9 @@ fn room_with(id: Int, exits: List(#(types.Direction, Int))) -> types.Room {
     items: [],
     exits: list.map(exits, fn(e) { Exit(e.0, "", "r", Some(e.1)) }),
     art_url: None,
+    x: 0,
+    y: 0,
+    z: 0,
   )
 }
 
@@ -164,4 +173,62 @@ pub fn map_places_unreachable_rooms_apart_test() {
     )
   let #(x, _, _) = cell(placed, 9)
   assert x > 1
+}
+
+pub fn exit_into_built_cell_joins_that_room_test() {
+  let db = store.open(":memory:")
+  let start = seed.run(db)
+  // A room already standing one step east of the crossroads, with no way
+  // back west yet.
+  let assert Ok(east) =
+    store.insert_room(
+      db,
+      "drowned_quarter",
+      "Quay",
+      "A wet quay.",
+      [],
+      [],
+      [],
+      #(1, 0, 0),
+    )
+  let assert Ok(from) = store.load_room(db, start)
+  let assert Ok(exit) = types.find_exit(from, East)
+  // The model is never asked: an unreachable endpoint proves it.
+  let nowhere = llm.Client(llm.Ollama("http://127.0.0.1:9"), "none")
+  let built = builder.build(db, nowhere, from, exit)
+  assert built.room_id == east
+  assert !built.new
+  let assert Ok(from) = store.load_room(db, start)
+  let assert Ok(Exit(target: Some(t), ..)) = types.find_exit(from, East)
+  assert t == east
+  // …and the quay was given a way back.
+  let assert Ok(quay) = store.load_room(db, east)
+  let assert Ok(Exit(target: Some(back), ..)) = types.find_exit(quay, West)
+  assert back == start
+}
+
+pub fn one_room_per_cell_test() {
+  let db = store.open(":memory:")
+  let _ = seed.run(db)
+  // The seed holds (0, 0, 0); a second room there is refused.
+  assert store.insert_room(db, "warrens", "Clash", "Nope.", [], [], [], #(
+      0,
+      0,
+      0,
+    ))
+    == Error(Nil)
+  assert store.room_at(db, #(0, 0, 0)) == Some(1)
+}
+
+pub fn clean_prompt_test() {
+  assert art.clean_prompt(
+      "Here is a short image-generation prompt for Shuttered Shops Alley:\n\nnarrow gaslit lane, shuttered shops",
+    )
+    == "narrow gaslit lane, shuttered shops"
+  assert art.clean_prompt(
+      "Here's a prompt for the quay: wet stone quay, moored barges",
+    )
+    == "wet stone quay, moored barges"
+  assert art.clean_prompt("\"flooded cellar, floating crates\"")
+    == "flooded cellar, floating crates"
 }

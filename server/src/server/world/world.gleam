@@ -43,7 +43,7 @@ pub type Message {
   GetRoom(id: Int, reply: Subject(Result(Subject(room.Message), Nil)))
   Traverse(room_id: Int, direction: Direction, reply: fn(Arrival) -> Nil)
   Prefetch(room_id: Int)
-  Built(key: Key, result: Result(Int, Nil))
+  Built(key: Key, result: Result(builder.Built, Nil))
   /// `on_reset` is how a dev reset tells this player's session to start over
   /// in the new world's first room (whose id it is given).
   Login(name: String, on_reset: fn(Int) -> Nil, reply: Subject(Bool))
@@ -223,23 +223,31 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Built(key, result) -> {
       let waiters = dict.get(state.waiting, key) |> result.unwrap([])
       let arrival = case result {
-        Ok(id) -> {
-          // Draw it now, so the picture is usually there before anyone is.
-          case store.load_room(state.store, id) {
-            Ok(new_room) -> art.prepare(state.art, new_room)
-            Error(Nil) -> Nil
+        Ok(built) -> {
+          // A new room: draw it now, so the picture is usually there before
+          // anyone is. (An exit that joined an existing room needs none.)
+          case built.new, store.load_room(state.store, built.room_id) {
+            True, Ok(new_room) -> art.prepare(state.art, new_room)
+            _, _ -> Nil
           }
-          Arrived(id)
+          Arrived(built.room_id)
         }
         Error(Nil) ->
           Blocked("The fog is too thick to go that way just now. Try again.")
       }
       list.each(waiters, fn(w) { w(arrival) })
-      // The source room's exit now leads somewhere; tell its process.
-      case dict.get(state.rooms, key.0) {
-        Ok(r) -> process.send(r, room.Refresh)
-        Error(Nil) -> Nil
+      // Exits changed (the source room's, and any neighbours joined to the
+      // new room): those rooms' processes reload.
+      let touched = case result {
+        Ok(built) -> [key.0, ..built.touched] |> list.unique
+        Error(Nil) -> [key.0]
       }
+      list.each(touched, fn(id) {
+        case dict.get(state.rooms, id) {
+          Ok(r) -> process.send(r, room.Refresh)
+          Error(Nil) -> Nil
+        }
+      })
       State(
         ..state,
         waiting: dict.delete(state.waiting, key),
@@ -307,7 +315,7 @@ fn start_build(state: State, key: Key) -> State {
           let assert Ok(from) = store.load_room(store, key.0)
           let assert Ok(exit) = types.find_exit(from, key.1)
           case exit.target {
-            Some(id) -> id
+            Some(id) -> builder.Built(room_id: id, new: False, touched: [])
             None -> builder.build(store, client, from, exit)
           }
         })

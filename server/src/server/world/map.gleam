@@ -1,13 +1,13 @@
-//// A player's map: the rooms they have visited, given grid coordinates.
+//// Grid layout for rooms that don't have coordinates.
 ////
-//// Rooms are only joined by exits, not placed on a grid, so positions are
-//// worked out here: walk outward from a starting room, putting each newly
-//// reached room one step away in the exit's direction (north is -y, east is
-//// +x, up is +z). Generated rooms don't promise that north-then-south leads
-//// back to the same square, so when the wanted cell is already taken the
-//// room goes to the nearest free cell on the same level instead. The
-//// layout is recomputed on each request, so it only ever covers what the
-//// player has seen.
+//// Rooms are now given fixed coordinates when they're built, and the map
+//// reads those. This is for worlds built before that: at startup, rooms
+//// without coordinates are placed by walking outward from the first room,
+//// putting each newly reached room one step away in the exit's direction
+//// (north is -y, east is +x, up is +z). Those older rooms never promised
+//// that north-then-south leads back to the same square, so when the wanted
+//// cell is already taken the room goes to the nearest free cell on the same
+//// level instead.
 
 import gleam/dict.{type Dict}
 import gleam/int

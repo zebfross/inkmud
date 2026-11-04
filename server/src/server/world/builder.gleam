@@ -1,6 +1,9 @@
-//// Builds the room on the far side of an unbuilt exit. The model proposes a
-//// room as JSON; this module checks every field, fixes up the geometry (the
-//// way back always exists and always points home), and writes it. A reply
+//// Builds the room on the far side of an unbuilt exit. Rooms sit on a fixed
+//// grid, so if that cell is already built the exit simply joins the room
+//// there. Otherwise the model proposes a room as JSON; this module checks
+//// every field, fixes up the geometry (the way back always exists, ways out
+//// into built cells join those rooms, neighbours pointing here get linked),
+//// and writes it. A reply
 //// that fails the checks is asked for again; after a few failures a plain
 //// fallback room is written so a player is never stuck at a doorway.
 
@@ -17,7 +20,7 @@ import server/world/seed
 import server/world/store.{type Store, NewExit}
 import server/world/types.{type Direction, type Exit, type Room}
 
-const attempts = 3
+const attempts = 4
 
 type Proposal {
   Proposal(
@@ -29,13 +32,77 @@ type Proposal {
   )
 }
 
-/// Build, save and link the room beyond `exit` of `from`. Returns its id.
-pub fn build(store: Store, client: Client, from: Room, exit: Exit) -> Int {
+/// What a build did: which room is now beyond the exit, whether it was newly
+/// written (so it needs a picture), and every room whose exits changed (so
+/// their processes can reload).
+pub type Built {
+  Built(room_id: Int, new: Bool, touched: List(Int))
+}
+
+/// Make the exit `exit` of `from` lead somewhere, keeping the grid honest:
+/// the room beyond is always exactly one step away. If that cell already has
+/// a room, the exit joins it (that's how loops form). Otherwise a new room
+/// is invented, written at that cell, and joined to every neighbour whose
+/// own ways out point into it.
+pub fn build(store: Store, client: Client, from: Room, exit: Exit) -> Built {
+  let target = types.step(types.cell(from), exit.direction)
+  case store.room_at(store, target) {
+    Some(existing) -> join(store, from, exit.direction, existing)
+    None -> invent(store, client, from, exit, target)
+  }
+}
+
+/// `from`'s exit in direction `d` now leads to the existing room `to`; make
+/// sure there's a way back from `to`, adding one if it had none.
+fn join(store: Store, from: Room, d: Direction, to: Int) -> Built {
+  store.link_exit(store, from.id, d, to)
+  let back = types.opposite(d)
+  case store.load_room(store, to) {
+    Ok(other) ->
+      case types.find_exit(other, back) {
+        Ok(types.Exit(target: None, ..)) ->
+          store.link_exit(store, other.id, back, from.id)
+        Ok(_) -> Nil
+        Error(Nil) ->
+          store.add_exit(
+            store,
+            other.id,
+            NewExit(
+              back,
+              "a way through toward " <> from.name,
+              from.region,
+              Some(from.id),
+            ),
+          )
+      }
+    Error(Nil) -> Nil
+  }
+  Built(room_id: to, new: False, touched: [from.id, to])
+}
+
+fn invent(
+  store: Store,
+  client: Client,
+  from: Room,
+  exit: Exit,
+  target: types.Cell,
+) -> Built {
   let back = types.opposite(exit.direction)
   let region =
     store.region(store, exit.target_region)
     |> result.unwrap(types.Region(exit.target_region, exit.target_region, ""))
-  let prompt = prompt(store, from, exit, region, back)
+  // Rooms already built around the new cell, other than the one we came
+  // from: #(direction from the new room, that room).
+  let neighbours =
+    types.all_directions
+    |> list.filter(fn(d) { d != back })
+    |> list.filter_map(fn(d) {
+      case store.room_at(store, types.step(target, d)) {
+        Some(id) -> store.load_room(store, id) |> result.map(fn(r) { #(d, r) })
+        None -> Error(Nil)
+      }
+    })
+  let prompt = prompt(store, from, exit, region, back, neighbours)
   let taken = store.room_names(store)
   let proposal = propose(client, prompt, back, taken, attempts)
   // The model can insist on a name through every retry; and two rooms built
@@ -45,14 +112,40 @@ pub fn build(store: Store, client: Client, from: Room, exit: Exit) -> Int {
       ..proposal,
       name: unique_name(proposal.name, store.room_names(store)),
     )
-  let new_exits = [
-    NewExit(back, "back toward " <> from.name, from.region, Some(from.id)),
-    ..list.filter_map(proposal.exits, fn(e) {
+  let proposed =
+    list.filter_map(proposal.exits, fn(e) {
       use d <- result.map(types.parse_direction(e.0))
-      NewExit(d, e.1, region.id, None)
+      #(d, e.1)
     })
-  ]
-  let id =
+  // A neighbour that already has a way out pointing into this cell gets
+  // one back, even if the model didn't think of it.
+  let facing =
+    list.filter(neighbours, fn(n) {
+      result.is_ok(types.find_exit(n.1, types.opposite(n.0)))
+    })
+  let new_exits =
+    list.flatten([
+      [NewExit(back, "back toward " <> from.name, from.region, Some(from.id))],
+      list.map(proposed, fn(e) {
+        // A way out into a built cell leads to the room that's there.
+        let target =
+          list.key_find(neighbours, e.0)
+          |> result.map(fn(r) { r.id })
+          |> option.from_result
+        NewExit(e.0, e.1, region.id, target)
+      }),
+      facing
+        |> list.filter(fn(n) { result.is_error(list.key_find(proposed, n.0)) })
+        |> list.map(fn(n) {
+          NewExit(
+            n.0,
+            "toward " <> { n.1 }.name,
+            { n.1 }.region,
+            Some({ n.1 }.id),
+          )
+        }),
+    ])
+  case
     store.insert_room(
       store,
       region.id,
@@ -61,10 +154,49 @@ pub fn build(store: Store, client: Client, from: Room, exit: Exit) -> Int {
       proposal.features,
       proposal.items,
       new_exits,
+      target,
     )
-  // Linking last: until this runs, nobody can walk into a half-written room.
-  store.link_exit(store, from.id, exit.direction, id)
-  id
+  {
+    // Another build claimed the cell while this one was thinking: use theirs.
+    Error(Nil) ->
+      case store.room_at(store, target) {
+        Some(existing) -> join(store, from, exit.direction, existing)
+        None -> panic as "room insert failed with the cell still empty"
+      }
+    Ok(id) -> {
+      // Joining last: until these run, nobody can walk into a half-written
+      // room. Then the neighbours: an unbuilt exit of theirs pointing here
+      // now leads here; one we gave a way out toward gets a way back.
+      store.link_exit(store, from.id, exit.direction, id)
+      let touched =
+        list.filter_map(neighbours, fn(n) {
+          let #(d, other) = n
+          let toward_us = types.opposite(d)
+          let ours = list.any(new_exits, fn(e) { e.direction == d })
+          case types.find_exit(other, toward_us), ours {
+            Ok(types.Exit(target: None, ..)), _ -> {
+              store.link_exit(store, other.id, toward_us, id)
+              Ok(other.id)
+            }
+            Error(Nil), True -> {
+              store.add_exit(
+                store,
+                other.id,
+                NewExit(
+                  toward_us,
+                  "a way through toward " <> proposal.name,
+                  region.id,
+                  Some(id),
+                ),
+              )
+              Ok(other.id)
+            }
+            _, _ -> Error(Nil)
+          }
+        })
+      Built(room_id: id, new: True, touched: [from.id, ..touched])
+    }
+  }
 }
 
 fn prompt(
@@ -73,10 +205,20 @@ fn prompt(
   exit: Exit,
   region: types.Region,
   back: Direction,
+  neighbours: List(#(Direction, Room)),
 ) -> String {
-  let nearby = case list.take(list.reverse(store.room_names(store)), 40) {
+  let used = case list.take(list.reverse(store.room_names(store)), 40) {
     [] -> "none yet"
     names -> string.join(names, ", ")
+  }
+  let around = case neighbours {
+    [] -> ""
+    _ ->
+      "\nAlready built right next to this place (an exit in that direction joins it): "
+      <> neighbours
+      |> list.map(fn(n) { types.direction_name(n.0) <> " — " <> { n.1 }.name })
+      |> string.join("; ")
+      <> "."
   }
   seed.setting
   <> "\n\nRegion: "
@@ -92,8 +234,10 @@ fn prompt(
   <> ". Before going, they saw: \""
   <> exit.hint
   <> "\".\nPlace names already used in the city (invent a new one, do not reuse these): "
-  <> nearby
-  <> ".\n\nInvent the place they arrive in. It must match what they saw and fit the region."
+  <> used
+  <> "."
+  <> around
+  <> "\n\nInvent the place they arrive in. It must match what they saw and fit the region."
   <> "\nReply with JSON only, in exactly this shape:\n"
   <> "{\"name\": \"2-5 word place name\", "
   <> "\"description\": \"2-4 sentences, second person present tense\", "
@@ -106,6 +250,9 @@ fn prompt(
   <> "\" — that is the way back."
 }
 
+/// Ask for a room, check it, and ask again on failure. A retry tells the
+/// model what was wrong: sent the identical prompt, a small model tends to
+/// give the identical answer (one proposed the same taken name nine times).
 fn propose(
   client: Client,
   prompt: String,
@@ -113,6 +260,28 @@ fn propose(
   taken: List(String),
   left: Int,
 ) -> Proposal {
+  attempt(client, prompt, "", back, taken, left)
+}
+
+fn attempt(
+  client: Client,
+  prompt: String,
+  feedback: String,
+  back: Direction,
+  taken: List(String),
+  left: Int,
+) -> Proposal {
+  let retry = fn(problem: String) {
+    logging.log(logging.Info, "room proposal rejected: " <> problem)
+    attempt(
+      client,
+      prompt,
+      "\n\nYour previous answer was rejected: " <> problem <> ". Fix that.",
+      back,
+      taken,
+      left - 1,
+    )
+  }
   case left {
     0 -> {
       logging.log(
@@ -122,7 +291,7 @@ fn propose(
       fallback()
     }
     _ ->
-      case llm.generate(client, llm.ask_json(prompt)) {
+      case llm.generate(client, llm.ask_json(prompt <> feedback)) {
         Ok(text) ->
           case parse(text, back) {
             Ok(proposal) -> {
@@ -133,24 +302,23 @@ fn propose(
                   !mentions(proposal.description, i)
                 })
               case duplicate, missing {
-                True, _ if left > 1 -> {
-                  logging.log(
-                    logging.Info,
-                    "room proposal rejected: name already used: "
-                      <> proposal.name,
+                // One retry for a taken name: the model tends to repeat it
+                // however it's told, and `unique_name` can set it apart.
+                True, _ if left == attempts ->
+                  retry(
+                    "\""
+                    <> proposal.name
+                    <> "\" is already a place in the city; choose a different name",
                   )
-                  propose(client, prompt, back, taken, left - 1)
-                }
                 _, [] -> proposal
-                _, missing if left > 1 -> {
-                  logging.log(
-                    logging.Info,
-                    "room proposal rejected: description doesn't mention "
-                      <> string.join(missing, ", "),
+                _, missing if left > 1 ->
+                  retry(
+                    "the description doesn't mention "
+                    <> string.join(missing, ", ")
+                    <> " by name; mention each item in the description, or drop it",
                   )
-                  propose(client, prompt, back, taken, left - 1)
-                }
-                // Last try: keep only what the text actually shows.
+                // Last try: keep only what the text actually shows. (A name
+                // that's still taken is set apart by `unique_name`.)
                 _, _ ->
                   Proposal(
                     ..proposal,
@@ -161,36 +329,61 @@ fn propose(
                   )
               }
             }
-            Error(reason) -> {
-              logging.log(logging.Info, "room proposal rejected: " <> reason)
-              propose(client, prompt, back, taken, left - 1)
-            }
+            Error(reason) -> retry(reason)
           }
         Error(Nil) -> {
           logging.log(logging.Warning, "room builder: no answer from model")
-          propose(client, prompt, back, taken, left - 1)
+          attempt(client, prompt, feedback, back, taken, left - 1)
         }
       }
   }
 }
 
 fn parse(text: String, back: Direction) -> Result(Proposal, String) {
-  let exit = {
-    use direction <- decode.field("direction", decode.string)
-    use hint <- decode.field("hint", decode.string)
-    decode.success(#(direction, hint))
-  }
-  let strings = decode.list(decode.string)
+  // Lenient where it can be: one malformed exit or item is dropped, not
+  // the whole room. An exit given as a bare "north" gets an empty hint (and
+  // is then dropped by the checks below, which need a hint).
+  let exit =
+    decode.one_of(
+      {
+        use direction <- decode.field("direction", decode.string)
+        use hint <- decode.optional_field("hint", "", decode.string)
+        decode.success(Ok(#(direction, hint)))
+      },
+      [
+        decode.string |> decode.map(fn(d) { Ok(#(d, "")) }),
+        decode.success(Error(Nil)),
+      ],
+    )
+  let strings =
+    decode.list(
+      decode.one_of(decode.string |> decode.map(Ok), [
+        decode.success(Error(Nil)),
+      ]),
+    )
+    |> decode.map(result.values)
   let decoder = {
     use name <- decode.field("name", decode.string)
     use description <- decode.field("description", decode.string)
     use features <- decode.optional_field("features", [], strings)
     use items <- decode.optional_field("items", [], strings)
-    use exits <- decode.optional_field("exits", [], decode.list(exit))
+    use exits <- decode.optional_field(
+      "exits",
+      [],
+      decode.list(exit) |> decode.map(result.values),
+    )
     decode.success(Proposal(name:, description:, features:, items:, exits:))
   }
   use p <- result.try(
-    json.parse(text, decoder) |> result.replace_error("not the expected JSON"),
+    json.parse(text, decoder)
+    |> result.map_error(fn(_) {
+      logging.log(
+        logging.Info,
+        "unreadable room JSON: "
+          <> string.slice(string.replace(text, "\n", " "), 0, 240),
+      )
+      "the reply wasn't JSON with \"name\" and \"description\" strings in the shape asked for"
+    }),
   )
   let name = clean(p.name, 60)
   let description = clean(p.description, 900)
@@ -317,9 +510,11 @@ pub fn unique_name(name: String, taken: List(String)) -> String {
   case free(name) {
     True -> name
     False -> {
-      let base = case string.starts_with(name, "The ") {
-        True -> string.drop_start(name, 4)
-        False -> name
+      // "A Fog-Choked Passage" → "Lower Fog-Choked Passage", not
+      // "Lower A Fog-Choked Passage".
+      let base = case string.split_once(name, " ") {
+        Ok(#("The", rest)) | Ok(#("A", rest)) | Ok(#("An", rest)) -> rest
+        _ -> name
       }
       ["Lower", "Upper", "Old", "Little", "Far", "Hidden", "Back"]
       |> list.map(fn(prefix) { prefix <> " " <> base })

@@ -46,6 +46,14 @@ browser (Lustre) ──websocket──▶ Gleam server
 ```
 
 - **Saved once, permanent.** A generated room is never regenerated.
+- **A real grid.** Every room has fixed `(x, y, z)` coordinates, set when it's
+  built: the room beyond an exit is always one step away, one room per cell
+  (a unique index enforces it). An exit into a cell that's already built
+  joins that room, so walking around a block brings you back — loops form on
+  their own. A new room is also joined to any neighbour whose exits point
+  into its cell. Worlds from before coordinates are placed once at startup.
+- **Your map** (the Map button) shows the rooms you've visited at their grid
+  positions, each floor a tilted plane stacked above the one below.
 - **Engine owns the truth.** The model proposes rooms in a fixed JSON shape;
   `builder.gleam` checks every field, guarantees the way back, and caps sizes.
   Player actions only change the world through the fixed command set.

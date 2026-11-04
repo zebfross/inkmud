@@ -16,6 +16,7 @@ import server/art
 import server/config.{type Config}
 import server/llm
 import server/session
+import server/world/map
 import server/world/seed
 import server/world/store
 import server/world/world
@@ -32,6 +33,7 @@ pub fn main() -> Nil {
     }
     _ -> 1
   }
+  place_unplaced_rooms(store, start_room)
   let fast = llm.client(config.model, llm.Fast)
   let builder = llm.client(config.model, llm.Builder)
   let art_queue =
@@ -113,4 +115,30 @@ fn file(path: String, content_type: String) -> Response(ResponseData) {
 fn not_found() -> Response(ResponseData) {
   response.new(404)
   |> response.set_body(mist.Bytes(bytes_tree.from_string("Not found")))
+}
+
+/// Worlds built before rooms had grid coordinates: give every room one,
+/// once, laid out from the exits. New rooms get theirs when built.
+fn place_unplaced_rooms(store: store.Store, start_room: Int) -> Nil {
+  case store.rooms_without_cell(store) {
+    [] -> Nil
+    missing -> {
+      let rooms =
+        store.all_room_ids(store)
+        |> list.filter_map(store.load_room(store, _))
+      map.layout(rooms, [start_room])
+      |> list.each(fn(p) {
+        case list.contains(missing, p.room.id) {
+          True -> store.set_cell(store, p.room.id, #(p.x, p.y, p.z))
+          False -> Nil
+        }
+      })
+      logging.log(
+        logging.Info,
+        "gave grid positions to "
+          <> int.to_string(list.length(missing))
+          <> " rooms built before coordinates existed",
+      )
+    }
+  }
 }

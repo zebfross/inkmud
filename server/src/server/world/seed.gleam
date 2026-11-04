@@ -53,43 +53,47 @@ pub fn run(store: Store) -> Int {
       theme: "brick sewers and low tunnels beneath the city, candle stubs and stolen lanterns, crude goblin totems hung with pocket watches and spoons, piles of stolen trinkets, warm stale air, glowing eyes",
     ),
   )
-  store.insert_room(
-    store,
-    "lantern_ward",
-    start_room_name,
-    "Four streets meet beneath a cast-iron gas lamp taller than any house, its glass stained amber with age and its flame hissing softly. Fog pools around your ankles. A lamplighter's ladder leans against the post, a hooked pole propped beside it and a tin of lamp oil at its foot, but their owner is nowhere to be seen. Somewhere far above, a bell rings once and falls silent.",
-    [
-      "towering cast-iron gas lamp with amber glass",
-      "fog pooling on cobblestones",
-      "an abandoned lamplighter's ladder",
-      "four cobbled streets meeting in a small square, shuttered shopfronts",
-    ],
-    ["lamplighter's hooked pole", "tin of lamp oil"],
-    [
-      NewExit(
-        North,
-        "worn stone stairs climb toward the dark shape of a broken bell tower",
-        "cathedral_hill",
-        None,
-      ),
-      NewExit(
-        East,
-        "the street slopes down into black water; you smell salt",
-        "drowned_quarter",
-        None,
-      ),
-      NewExit(
-        West,
-        "a narrow lane of shuttered shops, every window lit",
-        "lantern_ward",
-        None,
-      ),
-      NewExit(
-        Down,
-        "an iron grate in the cobbles breathes warm, stale air",
-        "warrens",
-        None,
-      ),
-    ],
-  )
+  let assert Ok(start) =
+    store.insert_room(
+      store,
+      "lantern_ward",
+      start_room_name,
+      "Four streets meet beneath a cast-iron gas lamp taller than any house, its glass stained amber with age and its flame hissing softly. Fog pools around your ankles. A lamplighter's ladder leans against the post, a hooked pole propped beside it and a tin of lamp oil at its foot, but their owner is nowhere to be seen. Somewhere far above, a bell rings once and falls silent.",
+      [
+        "towering cast-iron gas lamp with amber glass",
+        "fog pooling on cobblestones",
+        "an abandoned lamplighter's ladder",
+        "four cobbled streets meeting in a small square, shuttered shopfronts",
+      ],
+      ["lamplighter's hooked pole", "tin of lamp oil"],
+      [
+        NewExit(
+          North,
+          "worn stone stairs climb toward the dark shape of a broken bell tower",
+          "cathedral_hill",
+          None,
+        ),
+        NewExit(
+          East,
+          "the street slopes down into black water; you smell salt",
+          "drowned_quarter",
+          None,
+        ),
+        NewExit(
+          West,
+          "a narrow lane of shuttered shops, every window lit",
+          "lantern_ward",
+          None,
+        ),
+        NewExit(
+          Down,
+          "an iron grate in the cobbles breathes warm, stale air",
+          "warrens",
+          None,
+        ),
+      ],
+      // The centre of the city's grid.
+      #(0, 0, 0),
+    )
+  start
 }
