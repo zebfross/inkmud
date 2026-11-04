@@ -98,7 +98,7 @@ pub fn run(store: Store) -> Int {
   store.set_picture(
     store,
     start,
-    "A foggy square where four cobbled streets meet beneath a towering cast-iron gas lamp with amber glass, a ladder leaning on it. In the foreground: lamplighter's hooked pole, tin of lamp oil.",
+    "Close-up of a long wooden pole with an iron hook and a small dented tin can of oil, lying on wet cobblestones, large in the foreground. Behind: a foggy square where four streets meet beneath a tall cast-iron gas lamp.",
   )
   store.save_build_debug(
     store,

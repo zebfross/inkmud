@@ -30,6 +30,10 @@ type Proposal {
     picture: String,
     features: List(String),
     items: List(String),
+    /// Item name → what it plainly looks like, for the picture. A game name
+    /// can mislead an image model: "tin of lamp oil" gets drawn as a lamp,
+    /// "a small dented tin can of oil" as the thing itself.
+    looks: List(#(String, String)),
     exits: List(#(String, String)),
   )
 }
@@ -247,7 +251,7 @@ fn prompt(
   <> "\"description\": \"2-4 sentences, second person present tense\", "
   <> "\"picture\": \"one plain sentence, under 25 words, describing what a painting of this place shows (the place itself, its light and its main features); nothing that isn't in the description\", "
   <> "\"features\": [\"3-5 short visual details\"], "
-  <> "\"items\": [\"0-2 small portable objects lying here, each a short name of 1-4 words such as 'brass key'\"], "
+  <> "\"items\": [{\"name\": \"short name of 1-4 words, such as 'brass key'\", \"looks\": \"what it plainly looks like, 4-10 words, such as 'a small tarnished brass key'\"}] (0-2 small portable objects lying here), "
   <> "\"exits\": [{\"direction\": \"north|south|east|west|up|down\", \"hint\": \"short phrase: what you see of that way out\"}]}"
   <> "\nThe description must mention every item by its exact name, and every visual detail, and should hint at each way out without listing directions."
   <> "\nGive 1 to 3 exits. Do not use the direction \""
@@ -411,7 +415,24 @@ fn parse(text: String, back: Direction) -> Result(Proposal, String) {
       decode.one_of(decode.string, [decode.success("")]),
     )
     use features <- decode.optional_field("features", [], strings)
-    use items <- decode.optional_field("items", [], strings)
+    // Each item as {"name", "looks"}, or just a name.
+    let item =
+      decode.one_of(
+        {
+          use name <- decode.field("name", decode.string)
+          use looks <- decode.optional_field("looks", "", decode.string)
+          decode.success(Ok(#(name, looks)))
+        },
+        [
+          decode.string |> decode.map(fn(n) { Ok(#(n, "")) }),
+          decode.success(Error(Nil)),
+        ],
+      )
+    use items <- decode.optional_field(
+      "items",
+      [],
+      decode.list(item) |> decode.map(result.values),
+    )
     use exits <- decode.optional_field(
       "exits",
       [],
@@ -422,7 +443,8 @@ fn parse(text: String, back: Direction) -> Result(Proposal, String) {
       description:,
       picture:,
       features:,
-      items:,
+      items: list.map(items, fn(i) { i.0 }),
+      looks: items,
       exits:,
     ))
   }
@@ -468,6 +490,7 @@ fn parse(text: String, back: Direction) -> Result(Proposal, String) {
       |> list.map(item_name)
       |> list.filter(non_empty)
       |> list.take(2),
+    looks: list.map(p.looks, fn(l) { #(item_name(l.0), clean(l.1, 80)) }),
     exits:,
   ))
 }
@@ -586,14 +609,18 @@ fn non_empty(s: String) -> Bool {
 /// vendors and salmon), capped at 30 words, then every item, added by code,
 /// in the foreground. With no usable line, it's composed from the facts.
 fn complete_picture(p: Proposal) -> String {
-  case first_sentence(p.picture, 30) {
-    "" -> compose_picture(p.name, p.features, p.items)
-    setting ->
-      case p.items {
-        [] -> end_sentence(setting)
-        items -> end_sentence(setting) <> " " <> foreground(items)
-      }
+  let setting = case first_sentence(p.picture, 30) {
+    "" -> setting_from(p.name, p.features)
+    setting -> setting
   }
+  let things =
+    list.map(p.items, fn(item) {
+      case list.key_find(p.looks, item) {
+        Ok(look) if look != "" -> look
+        _ -> item
+      }
+    })
+  close_up(things, setting)
 }
 
 /// Up to the first full stop (or `max_words` words, whichever is shorter).
@@ -622,25 +649,45 @@ pub fn compose_picture(
   features: List(String),
   items: List(String),
 ) -> String {
-  let setting = case list.take(features, 3) {
+  close_up(items, setting_from(name, features))
+}
+
+fn setting_from(name: String, features: List(String)) -> String {
+  case list.take(features, 3) {
     [] -> name
     details -> name <> ": " <> string.join(details, ", ")
   }
-  case items {
-    [] -> end_sentence(setting)
-    _ -> end_sentence(setting) <> " " <> foreground(items)
+}
+
+/// The picture line: what you can pick up, large and first ("Close-up of a
+/// brass key and a leather-bound journal, large in the foreground"), then
+/// the place behind them. Listed as names after the setting, items were
+/// usually not drawn; framed as a close-up, they dominate the picture.
+pub fn close_up(things: List(String), setting: String) -> String {
+  let setting = strip_stop(string.trim(setting))
+  case things {
+    [] -> setting <> "."
+    _ ->
+      "Close-up of "
+      <> and_list(things)
+      <> ", large in the foreground. Behind: "
+      <> setting
+      <> "."
   }
 }
 
-fn foreground(items: List(String)) -> String {
-  "In the foreground: " <> string.join(items, ", ") <> "."
+fn and_list(things: List(String)) -> String {
+  case list.reverse(things) {
+    [] -> ""
+    [only] -> only
+    [last, ..rest] -> string.join(list.reverse(rest), ", ") <> " and " <> last
+  }
 }
 
-fn end_sentence(text: String) -> String {
-  let text = string.trim(text)
+fn strip_stop(text: String) -> String {
   case string.ends_with(text, ".") {
-    True -> text
-    False -> text <> "."
+    True -> string.drop_end(text, 1)
+    False -> text
   }
 }
 
@@ -651,6 +698,7 @@ fn fallback() -> Proposal {
     picture: "A narrow passage between damp stone walls, almost lost in thick fog.",
     features: ["thick fog", "damp stone walls", "dripping water"],
     items: [],
+    looks: [],
     exits: [],
   )
 }

@@ -267,24 +267,24 @@ fn draw(
 
 /// A short visual prompt from the room's facts. Falls back to the facts
 /// themselves if the model doesn't answer.
-/// The image prompt, in order of importance: the style (so it's never cut
-/// off: the image model reads only its first 77 tokens), then the items in
-/// the foreground (the model weighs early words most, and these are what a
-/// player can pick up — placed last, they were usually not drawn), then the
-/// setting. Built from the stored picture line ("setting. In the foreground:
-/// items."); rooms from before pictures existed get one composed from their
-/// facts. No model rewrites it: a 3B rewrite ignored length limits, buried
-/// the items in long lists and invented things that weren't there.
+/// The image prompt: the style first (so it's never cut off: the image
+/// model reads only its first 77 tokens), then the room's picture line,
+/// which leads with a close-up of the items. Lines stored in the earlier
+/// "setting. In the foreground: items." form are turned into the close-up
+/// form; rooms with no line get one composed from their facts. No model
+/// rewrites it: a 3B rewrite ignored length limits, buried the items in long
+/// lists and invented things that weren't there.
 pub fn image_prompt(room: Room) -> String {
   let picture = case string.trim(room.picture) {
     "" -> builder.compose_picture(room.name, room.features, room.items)
-    picture -> picture
+    picture ->
+      case string.split_once(picture, " In the foreground: ") {
+        Ok(#(setting, items)) ->
+          builder.close_up(string.split(strip_stop(items), ", "), setting)
+        Error(Nil) -> picture
+      }
   }
-  case string.split_once(picture, " In the foreground: ") {
-    Ok(#(setting, items)) ->
-      style <> ". In the foreground: " <> strip_stop(items) <> ". " <> setting
-    Error(Nil) -> style <> ". " <> picture
-  }
+  style <> ". " <> picture
 }
 
 fn strip_stop(text: String) -> String {

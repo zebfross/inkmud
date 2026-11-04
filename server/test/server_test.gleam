@@ -222,33 +222,35 @@ pub fn one_room_per_cell_test() {
 }
 
 pub fn image_prompt_test() {
-  // Style first (never cut off), then the room's own picture line.
+  // A line in the current form is used as written, after the style.
   let room =
     types.Room(
       ..room_with(1, []),
-      picture: "A quay at dusk. In the foreground a brass key.",
+      picture: "Close-up of a brass key, large in the foreground. Behind: a quay.",
     )
   assert art.image_prompt(room)
-    == art.style <> ". A quay at dusk. In the foreground a brass key."
-  // Items go right after the style, ahead of the setting.
-  let ordered =
+    == art.style
+    <> ". Close-up of a brass key, large in the foreground. Behind: a quay."
+  // The earlier "setting. In the foreground: items." form becomes a close-up.
+  let older =
     types.Room(
       ..room_with(3, []),
       picture: "A quay at dusk. In the foreground: brass key, rope.",
     )
-  assert art.image_prompt(ordered)
-    == art.style <> ". In the foreground: brass key, rope. A quay at dusk."
-  // A room from before pictures: composed from its facts, items included.
-  let old =
+  assert art.image_prompt(older)
+    == art.style
+    <> ". Close-up of brass key and rope, large in the foreground. Behind: A quay at dusk."
+  // No line at all: composed from the stored facts.
+  let oldest =
     types.Room(
       ..room_with(2, []),
       name: "The Quay",
       features: ["wet stones", "moored barges", "gulls", "rope coils"],
       items: ["brass key"],
     )
-  assert art.image_prompt(old)
+  assert art.image_prompt(oldest)
     == art.style
-    <> ". In the foreground: brass key. The Quay: wet stones, moored barges, gulls."
+    <> ". Close-up of brass key, large in the foreground. Behind: The Quay: wet stones, moored barges, gulls."
 }
 
 pub fn first_sentence_test() {
