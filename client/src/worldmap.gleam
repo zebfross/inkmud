@@ -41,6 +41,8 @@ pub type Msg {
   Select(Int)
   Hover(Option(Int))
   Recenter
+  /// Put away the room card (any interaction other than picking a room).
+  Dismiss
   Close
 }
 
@@ -62,12 +64,16 @@ pub fn refresh(state: State, view: MapView) -> State {
   State(..state, view:, selected:)
 }
 
+/// The room card closes on anything that isn't choosing a room: zooming,
+/// panning, focusing a floor, recentering, clicking elsewhere, Esc.
 pub fn update(state: State, msg: Msg) -> State {
   case msg {
-    ZoomBy(f) -> State(..state, zoom: clamp(state.zoom *. f, 0.4, 4.0))
+    ZoomBy(f) ->
+      State(..state, zoom: clamp(state.zoom *. f, 0.4, 4.0), selected: None)
     Wheel(dy) ->
       State(
         ..state,
+        selected: None,
         zoom: clamp(
           state.zoom
             *. case dy >. 0.0 {
@@ -86,17 +92,25 @@ pub fn update(state: State, msg: Msg) -> State {
           // Screen pixels → map units at the current zoom.
           let #(_, _, vb_w, _) = base_box(state.view)
           let per_px = vb_w /. state.zoom /. float.max(width, 1.0)
+          // A real drag, not the jitter of a click.
+          let moved =
+            float.absolute_value(x -. lx) +. float.absolute_value(y -. ly)
+            >. 3.0
           State(
             ..state,
             pan_x: state.pan_x -. { x -. lx } *. per_px,
             pan_y: state.pan_y -. { y -. ly } *. per_px,
             drag: Some(#(x, y)),
+            selected: case moved {
+              True -> None
+              False -> state.selected
+            },
           )
         }
       }
     DragEnd -> State(..state, drag: None)
     FocusLevel(z) ->
-      State(..state, focus: case state.focus == Some(z) {
+      State(..state, selected: None, focus: case state.focus == Some(z) {
         True -> None
         False -> Some(z)
       })
@@ -106,7 +120,9 @@ pub fn update(state: State, msg: Msg) -> State {
         False -> Some(id)
       })
     Hover(id) -> State(..state, hovered: id)
-    Recenter -> State(..state, zoom: 1.0, pan_x: 0.0, pan_y: 0.0)
+    Recenter ->
+      State(..state, zoom: 1.0, pan_x: 0.0, pan_y: 0.0, selected: None)
+    Dismiss -> State(..state, selected: None)
     Close -> state
   }
 }
@@ -203,7 +219,11 @@ pub fn view(state: State) -> Element(Msg) {
       attribute("tabindex", "-1"),
       event.on_keydown(fn(key) {
         case key {
-          "Escape" -> Close
+          "Escape" ->
+            case state.selected {
+              Some(_) -> Dismiss
+              None -> Close
+            }
           "+" | "=" -> ZoomBy(1.25)
           "-" -> ZoomBy(0.8)
           _ -> Hover(state.hovered)
@@ -242,6 +262,7 @@ pub fn view(state: State) -> Element(Msg) {
             decode.success(DragMove(x:, y:, width:))
           }),
           event.on("mouseup", decode.success(DragEnd)),
+          event.on_click(Dismiss),
           event.on("mouseleave", decode.success(DragEnd)),
           event.on("wheel", {
             use dy <- decode.field("deltaY", number())
@@ -335,7 +356,7 @@ fn view_level(state: State, z: Int) -> List(Element(Msg)) {
               attribute("x", num(label_at.0 -. 6.0)),
               attribute("y", num(label_at.1 +. 18.0)),
               attribute("text-anchor", "end"),
-              event.on_click(FocusLevel(z)),
+              event.on_click(FocusLevel(z)) |> event.stop_propagation,
             ],
             level_name(z),
           ),
@@ -442,7 +463,7 @@ fn view_room(state: State, room: MapRoom) -> List(Element(Msg)) {
             False -> ""
           },
         ),
-        event.on_click(Select(room.id)),
+        event.on_click(Select(room.id)) |> event.stop_propagation,
         event.on("mouseenter", decode.success(Hover(Some(room.id)))),
         event.on("mouseleave", decode.success(Hover(None))),
       ],
@@ -494,26 +515,34 @@ fn view_card(state: State) -> Element(Msg) {
   case found {
     Error(Nil) -> element.none()
     Ok(room) ->
-      html.aside([class("map-card")], [
-        case room.art {
-          Some(url) -> html.img([attribute.src(url), attribute.alt(room.name)])
-          None -> element.none()
-        },
-        html.div([class("map-card-text")], [
-          html.span([class("region")], [text(room.region)]),
-          html.strong([], [text(room.name)]),
-          html.span([class("map-card-meta")], [
-            text(case room.id == state.view.current {
-              True -> "You are here. "
-              False -> ""
-            }),
-            text(level_name(room.z) <> "."),
-            text(case room.unexplored {
-              [] -> ""
-              ways -> " Unexplored: " <> string.join(ways, ", ") <> "."
-            }),
+      html.aside(
+        [
+          class("map-card"),
+          attribute.title("Click to close"),
+          event.on_click(Dismiss),
+        ],
+        [
+          case room.art {
+            Some(url) ->
+              html.img([attribute.src(url), attribute.alt(room.name)])
+            None -> element.none()
+          },
+          html.div([class("map-card-text")], [
+            html.span([class("region")], [text(room.region)]),
+            html.strong([], [text(room.name)]),
+            html.span([class("map-card-meta")], [
+              text(case room.id == state.view.current {
+                True -> "You are here. "
+                False -> ""
+              }),
+              text(level_name(room.z) <> "."),
+              text(case room.unexplored {
+                [] -> ""
+                ways -> " Unexplored: " <> string.join(ways, ", ") <> "."
+              }),
+            ]),
           ]),
-        ]),
-      ])
+        ],
+      )
   }
 }
