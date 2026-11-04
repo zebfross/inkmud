@@ -1,0 +1,519 @@
+//// One process per connected player: the websocket. It parses commands,
+//// forwards them to the player's current room, and moves the player between
+//// rooms. Anything slow (a model call, a room being built) runs elsewhere
+//// and comes back as an `Event`, so the socket never stalls.
+
+import gleam/dict
+import gleam/dynamic/decode
+import gleam/erlang/process.{type Subject}
+import gleam/http/request.{type Request}
+import gleam/http/response.{type Response}
+import gleam/int
+import gleam/json
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/result
+import gleam/set
+import gleam/string
+import mist.{type Connection, type ResponseData}
+import server/command.{type Command}
+import server/llm.{type Client}
+import server/world/map
+import server/world/room
+import server/world/seed
+import server/world/store.{type Store}
+import server/world/types.{type Direction, type Room}
+import server/world/world
+import shared/protocol.{type ServerMsg, Line, Narration, System}
+
+pub type Deps {
+  Deps(
+    store: Store,
+    world: Subject(world.Message),
+    fast: Client,
+    start_room: Int,
+    dev_tools: Bool,
+  )
+}
+
+pub type Event {
+  Out(ServerMsg)
+  Moved(Direction, world.Arrival)
+  /// `room_id` is where the player was when they typed it.
+  Interpreted(original: String, room_id: Int, result: Result(String, Nil))
+  /// The world was reset; this is the new start room.
+  WorldWasReset(start: Int)
+}
+
+type Session {
+  Session(
+    deps: Deps,
+    self: Subject(Event),
+    name: Option(String),
+    room_id: Int,
+    room: Option(Subject(room.Message)),
+    moving: Bool,
+  )
+}
+
+pub fn handle(req: Request(Connection), deps: Deps) -> Response(ResponseData) {
+  mist.websocket(
+    request: req,
+    on_init: fn(_conn) {
+      let self = process.new_subject()
+      let selector = process.new_selector() |> process.select(self)
+      #(
+        Session(
+          deps:,
+          self:,
+          name: None,
+          room_id: deps.start_room,
+          room: None,
+          moving: False,
+        ),
+        Some(selector),
+      )
+    },
+    on_close: fn(session) {
+      case session.name {
+        Some(name) -> {
+          case session.room {
+            Some(r) -> process.send(r, room.Leave(name, None))
+            None -> Nil
+          }
+          process.send(session.deps.world, world.Logout(name))
+        }
+        None -> Nil
+      }
+    },
+    handler: fn(session, message, conn) {
+      case message {
+        mist.Text(text) ->
+          case protocol.decode_client(text) {
+            Ok(msg) -> mist.continue(client_message(session, msg, conn))
+            Error(Nil) -> mist.continue(session)
+          }
+        mist.Custom(event) -> mist.continue(on_event(session, event, conn))
+        mist.Binary(_) -> mist.continue(session)
+        mist.Closed | mist.Shutdown -> mist.stop()
+      }
+    },
+  )
+}
+
+fn send(conn: mist.WebsocketConnection, msg: ServerMsg) -> Nil {
+  let _ = mist.send_text_frame(conn, protocol.encode_server(msg))
+  Nil
+}
+
+fn system(conn, text: String) -> Nil {
+  send(conn, Line(System, text))
+}
+
+// CLIENT MESSAGES -------------------------------------------------------------
+
+fn client_message(session: Session, msg: protocol.ClientMsg, conn) -> Session {
+  case msg, session.name {
+    protocol.Hello(raw), None ->
+      case clean_name(raw) {
+        Error(Nil) -> {
+          system(conn, "Pick a name of 2 to 16 letters.")
+          session
+        }
+        Ok(name) ->
+          case
+            world.login(session.deps.world, name, fn(start) {
+              process.send(session.self, WorldWasReset(start))
+            })
+          {
+            False -> {
+              send(conn, protocol.NameTaken(name))
+              session
+            }
+            True -> {
+              send(conn, protocol.Welcome(name, session.deps.dev_tools))
+              send(
+                conn,
+                protocol.Inventory(store.inventory(session.deps.store, name)),
+              )
+              let room_id =
+                store.player_room(session.deps.store, name)
+                |> option.unwrap(session.deps.start_room)
+              enter(Session(..session, name: Some(name)), room_id, None, conn)
+            }
+          }
+      }
+    protocol.Hello(_), Some(_) -> session
+    protocol.Command(text), Some(_) ->
+      run(session, command.parse(text), False, conn)
+    protocol.Command(_), None -> session
+    protocol.ResetWorld, Some(_) ->
+      case session.deps.dev_tools {
+        True -> {
+          // The reply comes back to every session (this one included) as
+          // WorldWasReset.
+          let _ = world.reset(session.deps.world)
+          session
+        }
+        False -> {
+          system(conn, "That isn't available on this server.")
+          session
+        }
+      }
+    protocol.ResetWorld, None -> session
+    protocol.RequestMap, Some(name) -> {
+      send(conn, protocol.Map(map_view(session.deps, name, session.room_id)))
+      session
+    }
+    protocol.RequestMap, None -> session
+  }
+}
+
+fn clean_name(raw: String) -> Result(String, Nil) {
+  let letters =
+    raw
+    |> string.trim
+    |> string.to_graphemes
+    |> list.filter(fn(g) {
+      string.contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", g)
+    })
+    |> string.concat
+  case string.length(letters) {
+    n if n >= 2 && n <= 16 ->
+      Ok(
+        string.uppercase(string.slice(letters, 0, 1))
+        <> string.lowercase(string.drop_start(letters, 1)),
+      )
+    _ -> Error(Nil)
+  }
+}
+
+fn enter(
+  session: Session,
+  room_id: Int,
+  from: Option(Direction),
+  conn,
+) -> Session {
+  let assert Some(name) = session.name
+  case world.get_room(session.deps.world, room_id) {
+    Ok(r) -> {
+      let self = session.self
+      process.send(
+        r,
+        room.Enter(name, fn(msg) { process.send(self, Out(msg)) }, from),
+      )
+      store.set_player_room(session.deps.store, name, room_id)
+      store.record_visit(session.deps.store, name, room_id)
+      process.send(session.deps.world, world.Prefetch(room_id))
+      Session(..session, room_id:, room: Some(r), moving: False)
+    }
+    Error(Nil) -> {
+      system(
+        conn,
+        "The fog swallows that place. You find yourself back at the crossroads.",
+      )
+      case room_id == session.deps.start_room {
+        True -> session
+        False -> enter(session, session.deps.start_room, None, conn)
+      }
+    }
+  }
+}
+
+// COMMANDS --------------------------------------------------------------------
+
+fn run(session: Session, cmd: Command, interpreted: Bool, conn) -> Session {
+  let assert Some(name) = session.name
+  let tell_room = fn(msg) {
+    case session.room {
+      Some(r) -> process.send(r, msg)
+      None -> Nil
+    }
+  }
+  case cmd {
+    command.Go(d) ->
+      case session.moving {
+        True -> {
+          system(conn, "You're already on your way.")
+          session
+        }
+        False -> {
+          let self = session.self
+          process.send(
+            session.deps.world,
+            world.Traverse(session.room_id, d, fn(a) {
+              process.send(self, Moved(d, a))
+            }),
+          )
+          Session(..session, moving: True)
+        }
+      }
+    command.Look -> {
+      tell_room(room.Look(name))
+      session
+    }
+    command.Take(thing) -> {
+      tell_room(room.Take(name, thing))
+      session
+    }
+    command.Drop(thing) -> {
+      tell_room(room.Drop(name, thing))
+      session
+    }
+    command.Say(words) -> {
+      tell_room(room.Say(name, words))
+      session
+    }
+    command.Inventory -> {
+      let items = store.inventory(session.deps.store, name)
+      send(conn, protocol.Inventory(items))
+      system(conn, case items {
+        [] -> "You are carrying nothing."
+        _ -> "You are carrying: " <> string.join(items, ", ") <> "."
+      })
+      session
+    }
+    command.Help -> {
+      system(conn, command.help_text)
+      session
+    }
+    command.LookToward(d) -> {
+      tell_room(room.LookToward(name, d))
+      session
+    }
+    command.Examine(thing) -> {
+      background(session, fn(room_data, inventory) {
+        Out(examine(session.deps.fast, room_data, inventory, thing))
+      })
+      session
+    }
+    command.Unknown(text) ->
+      case interpreted || string.trim(text) == "" {
+        True -> {
+          system(conn, "You can't do that here. (Type help for commands.)")
+          session
+        }
+        False -> {
+          background(session, fn(room_data, inventory) {
+            Interpreted(
+              text,
+              room_data.id,
+              interpret(session.deps.fast, room_data, inventory, text),
+            )
+          })
+          session
+        }
+      }
+  }
+}
+
+/// Run `work` in its own process with the current room and inventory, and
+/// deliver its result back to this session as an event.
+fn background(session: Session, work: fn(Room, List(String)) -> Event) -> Nil {
+  let Session(self:, deps:, room:, name:, ..) = session
+  case room, name {
+    Some(r), Some(name) -> {
+      process.spawn_unlinked(fn() {
+        let room_data = process.call(r, 2000, room.Snapshot)
+        process.send(self, work(room_data, store.inventory(deps.store, name)))
+      })
+      Nil
+    }
+    _, _ -> Nil
+  }
+}
+
+// EVENTS ----------------------------------------------------------------------
+
+fn on_event(session: Session, event: Event, conn) -> Session {
+  case event {
+    // A room view sent just before the player left that room arrives
+    // after they're somewhere else. It's stale: drop it.
+    Out(protocol.Room(view)) if view.id != session.room_id -> session
+    Out(msg) -> {
+      send(conn, msg)
+      session
+    }
+    Moved(d, world.Building) -> {
+      send(
+        conn,
+        protocol.Busy(
+          "The fog thickens as the way "
+          <> types.direction_name(d)
+          <> " takes shape…",
+        ),
+      )
+      session
+    }
+    Moved(_, world.Blocked(reason)) -> {
+      system(conn, reason)
+      Session(..session, moving: False)
+    }
+    Moved(d, world.Arrived(id)) -> {
+      let assert Some(name) = session.name
+      case session.room {
+        Some(r) -> process.send(r, room.Leave(name, Some(d)))
+        None -> Nil
+      }
+      enter(session, id, Some(types.opposite(d)), conn)
+    }
+    // Typed in a room the player has since left: it no longer means anything.
+    // The old room's process is gone; start over at the new first room.
+    WorldWasReset(start) -> {
+      send(conn, protocol.WorldReset)
+      send(conn, protocol.Inventory([]))
+      system(conn, "The fog rolls in and the city is written anew.")
+      enter(Session(..session, room: None, moving: False), start, None, conn)
+    }
+    Interpreted(_, room_id, _) if room_id != session.room_id -> session
+    Interpreted(original, _, result) ->
+      case result {
+        Ok(text) ->
+          case command.parse(text) {
+            command.Unknown(_) ->
+              run(session, command.Unknown(original), True, conn)
+            cmd -> {
+              system(conn, "› " <> command.describe(cmd))
+              run(session, cmd, True, conn)
+            }
+          }
+        Error(Nil) -> run(session, command.Unknown(original), True, conn)
+      }
+  }
+}
+
+// MODEL CALLS -----------------------------------------------------------------
+
+fn context(room_data: Room, inventory: List(String)) -> String {
+  "Place: "
+  <> room_data.name
+  <> ". "
+  <> room_data.description
+  <> "\nVisible details: "
+  <> string.join(room_data.features, "; ")
+  <> "\nItems here: "
+  <> list_or_none(room_data.items)
+  <> "\nExits: "
+  <> list_or_none(
+    list.map(room_data.exits, fn(e) {
+      types.direction_name(e.direction) <> " (" <> e.hint <> ")"
+    }),
+  )
+  <> "\nThe player carries: "
+  <> list_or_none(inventory)
+}
+
+fn list_or_none(items: List(String)) -> String {
+  case items {
+    [] -> "nothing"
+    _ -> string.join(items, ", ")
+  }
+}
+
+/// Free-form input → one command from the fixed set, or none.
+fn interpret(
+  client: Client,
+  room_data: Room,
+  inventory: List(String),
+  text: String,
+) -> Result(String, Nil) {
+  let prompt =
+    "You translate a player's input in a text adventure into ONE game command.\n"
+    <> "Allowed commands: go north | go south | go east | go west | go up | go down | look | look <north/south/east/west/up/down> | examine <thing> | take <item> | drop <item> | inventory | say <words> | help\n\n"
+    <> context(room_data, inventory)
+    <> "\n\nPlayer input: \""
+    <> text
+    <> "\"\n\nReply with JSON only: {\"command\": \"<one allowed command>\"}. "
+    <> "Use the exit whose description matches what the player wants: to go there use go, to only look that way (\"what's down there?\") use look <direction>. If nothing fits, reply {\"command\": \"none\"}."
+  case
+    llm.generate(
+      client,
+      llm.Ask(..llm.ask_json(prompt), temperature: 0.0, timeout: 20_000),
+    )
+  {
+    Ok(reply) ->
+      case json.parse(reply, decode.at(["command"], decode.string)) {
+        Ok("none") | Ok("") -> Error(Nil)
+        Ok(cmd) -> Ok(cmd)
+        Error(_) -> Error(Nil)
+      }
+    Error(Nil) -> Error(Nil)
+  }
+}
+
+/// A closer look. Not saved: it may add colour but not facts.
+fn examine(
+  client: Client,
+  room_data: Room,
+  inventory: List(String),
+  thing: String,
+) -> ServerMsg {
+  let prompt =
+    seed.setting
+    <> "\n\n"
+    <> context(room_data, inventory)
+    <> "\n\nThe player examines \""
+    <> thing
+    <> "\". In 1-2 sentences, second person present tense, describe what they notice. Only describe things in the place description, visible details or items above; add texture to them but do not add new objects, people, creatures, exits or items. If \""
+    <> thing
+    <> "\" is not plausibly here, reply exactly: NOTHING"
+  case llm.generate(client, llm.Ask(..llm.ask(prompt), timeout: 30_000)) {
+    Ok(text) ->
+      case string.starts_with(string.trim(text), "NOTHING") {
+        True -> Line(System, "You don't see that here.")
+        False -> Line(Narration, string.trim(text))
+      }
+    Error(Nil) -> Line(System, "You can't make it out clearly.")
+  }
+}
+
+// MAP -------------------------------------------------------------------------
+
+/// The rooms this player has visited, laid out on a grid, with the
+/// passages between them and the ways out they haven't taken yet.
+fn map_view(deps: Deps, name: String, current: Int) -> protocol.MapView {
+  let visited = store.visited(deps.store, name)
+  let rooms = list.filter_map(visited, store.load_room(deps.store, _))
+  let seen = set.from_list(visited)
+  let regions =
+    store.regions(deps.store)
+    |> list.map(fn(r) { #(r.id, r.name) })
+    |> dict.from_list
+  let placed = map.layout(rooms, [deps.start_room, current])
+  protocol.MapView(
+    current:,
+    rooms: list.map(placed, fn(p) {
+      protocol.MapRoom(
+        id: p.room.id,
+        name: p.room.name,
+        region: dict.get(regions, p.room.region) |> result.unwrap(""),
+        art: p.room.art_url,
+        x: p.x,
+        y: p.y,
+        z: p.z,
+        unexplored: p.room.exits
+          |> list.filter(fn(e) {
+            case e.target {
+              Some(t) -> !set.contains(seen, t)
+              None -> True
+            }
+          })
+          |> list.map(fn(e) { types.direction_name(e.direction) }),
+      )
+    }),
+    links: placed
+      |> list.flat_map(fn(p) {
+        list.filter_map(p.room.exits, fn(e) {
+          case e.target {
+            Some(t) ->
+              case set.contains(seen, t) {
+                True -> Ok(#(int.min(p.room.id, t), int.max(p.room.id, t)))
+                False -> Error(Nil)
+              }
+            None -> Error(Nil)
+          }
+        })
+      })
+      |> list.unique,
+  )
+}

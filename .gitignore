@@ -1,0 +1,8 @@
+build/
+data/
+.env
+imagegen/.venv/
+__pycache__/
+server/priv/static/app.js
+*.db
+*.db-*

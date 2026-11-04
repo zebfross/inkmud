@@ -1,0 +1,13 @@
+[project]
+name = "inkmud-imagegen"
+version = "0.1.0"
+description = "inkmud image service: local SDXL-Turbo in development, hosted FLUX in production"
+requires-python = ">=3.12,<3.13"
+dependencies = ["pillow"]
+
+[project.optional-dependencies]
+# The local backend. Not needed on a server that uses IMAGE_BACKEND=fal.
+local = ["torch", "diffusers", "transformers", "accelerate", "safetensors"]
+
+[tool.uv]
+package = false
