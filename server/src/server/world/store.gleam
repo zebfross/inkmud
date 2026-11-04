@@ -2,6 +2,7 @@
 //// once written, is never regenerated — later visitors read the same rows.
 
 import gleam/dynamic/decode
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -45,6 +46,13 @@ create table if not exists items (
 create table if not exists players (
   name text primary key,
   room_id integer not null references rooms(id)
+);
+create table if not exists room_debug (
+  room_id integer primary key references rooms(id),
+  builder_prompt text not null default '',
+  attempts text not null default '[]',
+  image_prompt text,
+  image_seed integer
 );
 create table if not exists visits (
   player text not null,
@@ -113,7 +121,7 @@ pub fn wipe_and(store: Store, seed: fn(Store) -> Int) -> Int {
   exec(
     store,
     "begin;
-    delete from visits; delete from items; delete from players; delete from exits;
+    delete from room_debug; delete from visits; delete from items; delete from players; delete from exits;
     delete from rooms; delete from regions;
     delete from sqlite_sequence;
     commit;",
@@ -625,4 +633,97 @@ pub fn set_player_room(store: Store, name: String, room_id: Int) -> Nil {
 
 fn split_lines(text: String) -> List(String) {
   string.split(text, "\n") |> list.filter(fn(s) { string.trim(s) != "" })
+}
+
+// DEBUG (developer view of how a room was made) ------------------------------
+
+/// One reply from the room builder: the feedback it was sent with (empty
+/// for the first try), what the model replied, and why it was rejected
+/// (empty if it was the one used).
+pub type BuildAttempt {
+  BuildAttempt(feedback: String, reply: String, problem: String)
+}
+
+pub type RoomDebug {
+  RoomDebug(
+    builder_prompt: String,
+    attempts: List(BuildAttempt),
+    image_prompt: Option(String),
+    image_seed: Option(Int),
+  )
+}
+
+pub fn save_build_debug(
+  store: Store,
+  room_id: Int,
+  prompt: String,
+  attempts: List(BuildAttempt),
+) -> Nil {
+  let attempts_json =
+    json.array(attempts, fn(a) {
+      json.object([
+        #("feedback", json.string(a.feedback)),
+        #("reply", json.string(a.reply)),
+        #("problem", json.string(a.problem)),
+      ])
+    })
+    |> json.to_string
+  let assert Ok(_) =
+    sqlight.query(
+      "insert into room_debug (room_id, builder_prompt, attempts) values (?, ?, ?)
+       on conflict(room_id) do update set builder_prompt = excluded.builder_prompt, attempts = excluded.attempts",
+      store,
+      [sqlight.int(room_id), sqlight.text(prompt), sqlight.text(attempts_json)],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+pub fn save_image_debug(
+  store: Store,
+  room_id: Int,
+  prompt: String,
+  seed: Int,
+) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "insert into room_debug (room_id, image_prompt, image_seed) values (?, ?, ?)
+       on conflict(room_id) do update set image_prompt = excluded.image_prompt, image_seed = excluded.image_seed",
+      store,
+      [sqlight.int(room_id), sqlight.text(prompt), sqlight.int(seed)],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+pub fn load_debug(store: Store, room_id: Int) -> RoomDebug {
+  let attempt = {
+    use feedback <- decode.field("feedback", decode.string)
+    use reply <- decode.field("reply", decode.string)
+    use problem <- decode.field("problem", decode.string)
+    decode.success(BuildAttempt(feedback:, reply:, problem:))
+  }
+  let row = {
+    use builder_prompt <- decode.field(0, decode.string)
+    use attempts <- decode.field(1, decode.string)
+    use image_prompt <- decode.field(2, decode.optional(decode.string))
+    use image_seed <- decode.field(3, decode.optional(decode.int))
+    decode.success(RoomDebug(
+      builder_prompt:,
+      attempts: json.parse(attempts, decode.list(attempt)) |> result.unwrap([]),
+      image_prompt:,
+      image_seed:,
+    ))
+  }
+  case
+    sqlight.query(
+      "select builder_prompt, attempts, image_prompt, image_seed from room_debug where room_id = ?",
+      store,
+      [sqlight.int(room_id)],
+      row,
+    )
+  {
+    Ok([debug]) -> debug
+    _ -> RoomDebug("", [], None, None)
+  }
 }

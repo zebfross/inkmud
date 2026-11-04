@@ -19,6 +19,8 @@ pub type ClientMsg {
   ResetWorld
   /// Send me my map.
   RequestMap
+  /// Dev only: how this room was made (prompts and replies).
+  RequestDebug(room_id: Int)
 }
 
 pub fn encode_client(msg: ClientMsg) -> String {
@@ -36,6 +38,8 @@ pub fn encode_client(msg: ClientMsg) -> String {
       ])
     ResetWorld -> json.object([#("t", json.string("reset"))])
     RequestMap -> json.object([#("t", json.string("map"))])
+    RequestDebug(room_id:) ->
+      json.object([#("t", json.string("debug")), #("room", json.int(room_id))])
   }
   |> json.to_string
 }
@@ -55,6 +59,10 @@ pub fn decode_client(text: String) -> Result(ClientMsg, Nil) {
       }
       "reset" -> decode.success(ResetWorld)
       "map" -> decode.success(RequestMap)
+      "debug" -> {
+        use room_id <- decode.field("room", decode.int)
+        decode.success(RequestDebug(room_id:))
+      }
       _ -> decode.failure(Command(""), "ClientMsg")
     }
   }
@@ -101,6 +109,31 @@ pub type MapView {
   MapView(rooms: List(MapRoom), links: List(#(Int, Int)), current: Int)
 }
 
+/// Dev only: everything that went into a room, for debugging mismatches
+/// between its text, items and picture.
+pub type DebugAttempt {
+  /// `problem` empty: this reply was used.
+  DebugAttempt(feedback: String, reply: String, problem: String)
+}
+
+pub type DebugView {
+  DebugView(
+    room_id: Int,
+    name: String,
+    description: String,
+    picture: String,
+    features: List(String),
+    items: List(String),
+    /// Exactly what was sent to the image model, if the room has been drawn.
+    image_prompt_sent: Option(String),
+    image_seed: Option(Int),
+    /// What would be sent if it were drawn now.
+    image_prompt_now: String,
+    builder_prompt: String,
+    attempts: List(DebugAttempt),
+  )
+}
+
 pub type Tone {
   /// The world describing itself.
   Narration
@@ -124,6 +157,8 @@ pub type ServerMsg {
   Replaced
   /// The player's map, in answer to RequestMap.
   Map(MapView)
+  /// Dev only, in answer to RequestDebug.
+  Debug(DebugView)
   Room(RoomView)
   Line(tone: Tone, text: String)
   /// The picture for a room is ready.
@@ -147,6 +182,30 @@ pub fn encode_server(msg: ServerMsg) -> String {
       json.object([
         #("t", json.string("name_taken")),
         #("name", json.string(name)),
+      ])
+    Debug(d) ->
+      json.object([
+        #("t", json.string("debug")),
+        #("room", json.int(d.room_id)),
+        #("name", json.string(d.name)),
+        #("description", json.string(d.description)),
+        #("picture", json.string(d.picture)),
+        #("features", json.array(d.features, json.string)),
+        #("items", json.array(d.items, json.string)),
+        #("image_prompt_sent", json.nullable(d.image_prompt_sent, json.string)),
+        #("image_seed", json.nullable(d.image_seed, json.int)),
+        #("image_prompt_now", json.string(d.image_prompt_now)),
+        #("builder_prompt", json.string(d.builder_prompt)),
+        #(
+          "attempts",
+          json.array(d.attempts, fn(a) {
+            json.object([
+              #("feedback", json.string(a.feedback)),
+              #("reply", json.string(a.reply)),
+              #("problem", json.string(a.problem)),
+            ])
+          }),
+        ),
       ])
     Map(view) ->
       json.object([
@@ -272,6 +331,47 @@ pub fn decode_server(text: String) -> Result(ServerMsg, Nil) {
       }
       "world_reset" -> decode.success(WorldReset)
       "replaced" -> decode.success(Replaced)
+      "debug" -> {
+        let attempt = {
+          use feedback <- decode.field("feedback", decode.string)
+          use reply <- decode.field("reply", decode.string)
+          use problem <- decode.field("problem", decode.string)
+          decode.success(DebugAttempt(feedback:, reply:, problem:))
+        }
+        let strings = decode.list(decode.string)
+        use room_id <- decode.field("room", decode.int)
+        use name <- decode.field("name", decode.string)
+        use description <- decode.field("description", decode.string)
+        use picture <- decode.field("picture", decode.string)
+        use features <- decode.field("features", strings)
+        use items <- decode.field("items", strings)
+        use image_prompt_sent <- decode.field(
+          "image_prompt_sent",
+          decode.optional(decode.string),
+        )
+        use image_seed <- decode.field(
+          "image_seed",
+          decode.optional(decode.int),
+        )
+        use image_prompt_now <- decode.field("image_prompt_now", decode.string)
+        use builder_prompt <- decode.field("builder_prompt", decode.string)
+        use attempts <- decode.field("attempts", decode.list(attempt))
+        decode.success(
+          Debug(DebugView(
+            room_id:,
+            name:,
+            description:,
+            picture:,
+            features:,
+            items:,
+            image_prompt_sent:,
+            image_seed:,
+            image_prompt_now:,
+            builder_prompt:,
+            attempts:,
+          )),
+        )
+      }
       "map" -> {
         let map_room = {
           use id <- decode.field("id", decode.int)

@@ -2,6 +2,7 @@
 //// and a command box, over one websocket.
 
 import gleam/dynamic/decode
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -108,6 +109,9 @@ type Model {
     map_open: Bool,
     /// Phone: the ⋯ sheet (leave, developer tools).
     more_open: Bool,
+    /// Dev only: the "how this room was made" panel.
+    debug_open: Bool,
+    debug: Option(protocol.DebugView),
     /// Touch-and-hold on an exit: which one, and a token so a hold timer
     /// that fires after the finger lifted (or a newer press) is ignored.
     pressing: Option(protocol.ExitView),
@@ -138,6 +142,9 @@ type Msg {
   OpenMap
   MapMsg(worldmap.Msg)
   PlayHere
+  OpenDebug
+  CloseDebug
+  DebugKey(String)
   ToggleMore
   ExitTap(String)
   PressStart(protocol.ExitView)
@@ -177,6 +184,8 @@ fn init(_) -> #(Model, Effect(Msg)) {
       map: None,
       map_open: False,
       more_open: False,
+      debug_open: False,
+      debug: None,
       pressing: None,
       press_token: 0,
       held: False,
@@ -263,6 +272,23 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     Key("ArrowDown") -> recall(model, model.history_pos - 1)
     Key(_) -> #(model, effect.none())
     PlayHere -> #(Model(..model, replaced: False), connect())
+    OpenDebug ->
+      case model.room {
+        Some(room) -> #(
+          Model(..model, debug_open: True, more_open: False),
+          send(model, protocol.RequestDebug(room.id)),
+        )
+        None -> #(model, effect.none())
+      }
+    CloseDebug -> #(
+      Model(..model, debug_open: False, debug: None),
+      effect.none(),
+    )
+    DebugKey("Escape") -> #(
+      Model(..model, debug_open: False, debug: None),
+      effect.none(),
+    )
+    DebugKey(_) -> #(model, effect.none())
     ToggleMore -> #(Model(..model, more_open: !model.more_open), effect.none())
     Noop -> #(model, effect.none())
     ExitTap(direction) ->
@@ -383,6 +409,14 @@ fn receive(model: Model, msg: ServerMsg) -> #(Model, Effect(Msg)) {
       ),
       effect.none(),
     )
+    protocol.Debug(view) ->
+      case model.debug_open {
+        True -> #(
+          Model(..model, debug: Some(view)),
+          effect.after_paint(fn(_, _) { ffi_focus("debug") }),
+        )
+        False -> #(model, effect.none())
+      }
     protocol.Replaced -> #(
       Model(..model, replaced: True, map: None, map_open: False),
       effect.none(),
@@ -436,10 +470,17 @@ fn receive(model: Model, msg: ServerMsg) -> #(Model, Effect(Msg)) {
           protocol.RoomView(..room, art: old.art)
         _, _ -> room
       }
-      let follow = case new_room && model.map_open {
-        True -> send(model, protocol.RequestMap)
-        False -> effect.none()
-      }
+      let follow =
+        effect.batch([
+          case new_room && model.map_open {
+            True -> send(model, protocol.RequestMap)
+            False -> effect.none()
+          },
+          case new_room && model.debug_open {
+            True -> send(model, protocol.RequestDebug(room.id))
+            False -> effect.none()
+          },
+        ])
       #(Model(..model, room: Some(room)), effect.batch([scroll(), follow]))
     }
     protocol.Line(tone, text) -> {
@@ -589,6 +630,10 @@ fn view_game(model: Model) -> Element(Msg) {
       True -> view_more_sheet(model)
       False -> element.none()
     },
+    case model.debug_open, model.debug {
+      True, Some(debug) -> view_debug(debug)
+      _, _ -> element.none()
+    },
   ])
 }
 
@@ -688,8 +733,13 @@ fn view_dev_tools(model: Model) -> Element(Msg) {
     True, False ->
       html.div([class("group dev")], [
         html.h3([], [text("Developer")]),
-        html.button([class("chip danger"), event.on_click(AskReset)], [
-          text("Reset world"),
+        html.div([class("chips")], [
+          html.button([class("chip"), event.on_click(OpenDebug)], [
+            text("Show prompts for this room"),
+          ]),
+          html.button([class("chip danger"), event.on_click(AskReset)], [
+            text("Reset world"),
+          ]),
         ]),
       ])
     True, True ->
@@ -813,5 +863,138 @@ fn view_log_entries(entries: List(Entry)) -> Element(Msg) {
         Waiting -> html.p([class("entry waiting")], [text(entry.text)])
       }
     }),
+  )
+}
+
+// DEBUG -----------------------------------------------------------------------
+
+/// Dev only: how the current room was made, so a mismatch between its text,
+/// items and picture can be traced to the prompt or reply that caused it.
+fn view_debug(d: protocol.DebugView) -> Element(Msg) {
+  let pre = fn(body: String) { html.pre([class("debug-pre")], [text(body)]) }
+  let field = fn(label: String, body: Element(Msg)) {
+    html.div([class("debug-field")], [
+      html.h4([], [text(label)]),
+      body,
+    ])
+  }
+  let list_or_none = fn(xs: List(String)) {
+    case xs {
+      [] -> "(none)"
+      _ -> string.join(xs, "\n")
+    }
+  }
+  html.div(
+    [
+      class("debug-overlay"),
+      attribute.id("debug"),
+      attribute.attribute("tabindex", "-1"),
+      event.on_keydown(DebugKey),
+    ],
+    [
+      html.div([class("map-bar")], [
+        html.h2([], [text("How this room was made")]),
+        html.span([class("map-count")], [
+          text("room " <> int.to_string(d.room_id) <> " · " <> d.name),
+        ]),
+        html.div([class("map-buttons")], [
+          html.button(
+            [
+              class("chip"),
+              attribute.title("Close (Esc)"),
+              event.on_click(CloseDebug),
+            ],
+            [text("✕")],
+          ),
+        ]),
+      ]),
+      html.div([class("debug-body")], [
+        html.section([class("debug-section")], [
+          html.h3([], [text("Picture")]),
+          field("Image prompt sent", case d.image_prompt_sent {
+            Some(sent) -> pre(sent)
+            None -> html.p([class("debug-note")], [text("Not drawn yet.")])
+          }),
+          case d.image_prompt_sent == Some(d.image_prompt_now) {
+            True -> element.none()
+            False -> field("Image prompt if drawn now", pre(d.image_prompt_now))
+          },
+          field(
+            "Seed",
+            pre(case d.image_seed {
+              Some(seed) -> int.to_string(seed)
+              None -> "—"
+            }),
+          ),
+          field(
+            "Stored picture line",
+            pre(case d.picture {
+              "" ->
+                "(none: built before picture lines existed; composed from the facts below)"
+              picture -> picture
+            }),
+          ),
+        ]),
+        html.section([class("debug-section")], [
+          html.h3([], [text("Stored room")]),
+          field("Description", pre(d.description)),
+          field("Items", pre(list_or_none(d.items))),
+          field("Visual details", pre(list_or_none(d.features))),
+        ]),
+        html.section([class("debug-section")], [
+          html.h3([], [text("Room builder")]),
+          case d.builder_prompt {
+            "" ->
+              html.p([class("debug-note")], [
+                text(
+                  "No record: built before prompts were saved. Reset the world to rebuild with records.",
+                ),
+              ])
+            prompt ->
+              html.details([], [
+                html.summary([], [
+                  text(
+                    "Prompt ("
+                    <> int.to_string(string.length(prompt))
+                    <> " characters)",
+                  ),
+                ]),
+                pre(prompt),
+              ])
+          },
+          ..list.index_map(d.attempts, fn(a, i) {
+            let status = case a.problem {
+              "" -> html.span([class("debug-ok")], [text("used")])
+              problem ->
+                case string.starts_with(problem, "used") {
+                  True -> html.span([class("debug-ok")], [text(problem)])
+                  False ->
+                    html.span([class("debug-bad")], [
+                      text("rejected: " <> problem),
+                    ])
+                }
+            }
+            html.div([class("debug-attempt")], [
+              html.h4([], [
+                text("Reply " <> int.to_string(i + 1) <> " "),
+                status,
+              ]),
+              case a.feedback {
+                "" -> element.none()
+                feedback ->
+                  field(
+                    "Feedback added to the prompt",
+                    pre(string.trim(feedback)),
+                  )
+              },
+              case a.reply {
+                "" -> element.none()
+                reply -> pre(reply)
+              },
+            ])
+          })
+        ]),
+      ]),
+    ],
   )
 }

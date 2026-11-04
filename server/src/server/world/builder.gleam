@@ -106,7 +106,7 @@ fn invent(
     })
   let prompt = prompt(store, from, exit, region, back, neighbours)
   let taken = store.room_names(store)
-  let proposal = propose(client, prompt, back, taken, attempts)
+  let #(proposal, build_log) = propose(client, prompt, back, taken, attempts)
   // The model can insist on a name through every retry; and two rooms built
   // at the same moment can't see each other's. Re-read and set it apart.
   let proposal =
@@ -167,6 +167,7 @@ fn invent(
       }
     Ok(id) -> {
       store.set_picture(store, id, proposal.picture)
+      store.save_build_debug(store, id, prompt, build_log)
       // Joining last: until these run, nobody can walk into a half-written
       // room. Then the neighbours: an unbuilt exit of theirs pointing here
       // now leads here; one we gave a way out toward gets a way back.
@@ -257,14 +258,17 @@ fn prompt(
 /// Ask for a room, check it, and ask again on failure. A retry tells the
 /// model what was wrong: sent the identical prompt, a small model tends to
 /// give the identical answer (one proposed the same taken name nine times).
+/// The proposal used, and every reply along the way (for the developer
+/// view of how the room was made).
 fn propose(
   client: Client,
   prompt: String,
   back: Direction,
   taken: List(String),
   left: Int,
-) -> Proposal {
-  attempt(client, prompt, "", back, taken, left)
+) -> #(Proposal, List(store.BuildAttempt)) {
+  let #(proposal, log) = attempt(client, prompt, "", back, taken, left, [])
+  #(proposal, list.reverse(log))
 }
 
 fn attempt(
@@ -274,8 +278,9 @@ fn attempt(
   back: Direction,
   taken: List(String),
   left: Int,
-) -> Proposal {
-  let retry = fn(problem: String) {
+  log: List(store.BuildAttempt),
+) -> #(Proposal, List(store.BuildAttempt)) {
+  let retry = fn(reply: String, problem: String) {
     logging.log(logging.Info, "room proposal rejected: " <> problem)
     attempt(
       client,
@@ -284,6 +289,7 @@ fn attempt(
       back,
       taken,
       left - 1,
+      [store.BuildAttempt(feedback:, reply:, problem:), ..log],
     )
   }
   case left {
@@ -292,7 +298,14 @@ fn attempt(
         logging.Warning,
         "room builder gave up; writing fallback room",
       )
-      fallback()
+      #(fallback(), [
+        store.BuildAttempt(
+          feedback: "",
+          reply: "",
+          problem: "gave up after every attempt failed: wrote the fallback room",
+        ),
+        ..log
+      ])
     }
     _ ->
       case llm.generate(client, llm.ask_json(prompt <> feedback)) {
@@ -310,15 +323,17 @@ fn attempt(
                 // however it's told, and `unique_name` can set it apart.
                 True, _ if left == attempts ->
                   retry(
+                    text,
                     "\""
-                    <> proposal.name
-                    <> "\" is already a place in the city; choose a different name",
+                      <> proposal.name
+                      <> "\" is already a place in the city; choose a different name",
                   )
                 _, [_, ..] if left > 1 ->
                   retry(
+                    text,
                     "the description doesn't mention "
-                    <> string.join(missing, ", ")
-                    <> " by name; mention each item in the description, or drop it",
+                      <> string.join(missing, ", ")
+                      <> " by name; mention each item in the description, or drop it",
                   )
                 // Accept. On the last try, keep only items the description
                 // shows (a name still taken is set apart by `unique_name`).
@@ -329,16 +344,36 @@ fn attempt(
                       proposal.description,
                       _,
                     ))
+                  let dropped =
+                    list.filter(proposal.items, fn(i) {
+                      !list.contains(items, i)
+                    })
                   let proposal = Proposal(..proposal, items:)
-                  Proposal(..proposal, picture: complete_picture(proposal))
+                  let note = case dropped {
+                    [] -> ""
+                    _ ->
+                      "used, but dropped items the description never mentions: "
+                      <> string.join(dropped, ", ")
+                  }
+                  #(Proposal(..proposal, picture: complete_picture(proposal)), [
+                    store.BuildAttempt(feedback:, reply: text, problem: note),
+                    ..log
+                  ])
                 }
               }
             }
-            Error(reason) -> retry(reason)
+            Error(reason) -> retry(text, reason)
           }
         Error(Nil) -> {
           logging.log(logging.Warning, "room builder: no answer from model")
-          attempt(client, prompt, feedback, back, taken, left - 1)
+          attempt(client, prompt, feedback, back, taken, left - 1, [
+            store.BuildAttempt(
+              feedback:,
+              reply: "",
+              problem: "no answer from the model",
+            ),
+            ..log
+          ])
         }
       }
   }

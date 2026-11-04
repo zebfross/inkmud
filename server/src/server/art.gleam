@@ -216,6 +216,8 @@ fn draw(
   room: Room,
 ) -> Result(String, Nil) {
   let prompt = image_prompt(room)
+  let seed = 1000 + room.id
+  store.save_image_debug(store, room.id, prompt, seed)
   logging.log(
     logging.Info,
     "drawing room " <> int.to_string(room.id) <> ": " <> prompt,
@@ -223,7 +225,7 @@ fn draw(
   let body =
     json.object([
       #("prompt", json.string(prompt)),
-      #("seed", json.int(1000 + room.id)),
+      #("seed", json.int(seed)),
     ])
     |> json.to_string
     |> bit_array.from_string

@@ -100,5 +100,11 @@ pub fn run(store: Store) -> Int {
     start,
     "A foggy square where four cobbled streets meet beneath a towering cast-iron gas lamp with amber glass, a ladder leaning on it. In the foreground: lamplighter's hooked pole, tin of lamp oil.",
   )
+  store.save_build_debug(
+    store,
+    start,
+    "(hand-written in server/src/server/world/seed.gleam; no model was asked)",
+    [],
+  )
   start
 }

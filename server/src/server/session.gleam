@@ -16,6 +16,7 @@ import gleam/result
 import gleam/set
 import gleam/string
 import mist.{type Connection, type ResponseData}
+import server/art
 import server/command.{type Command}
 import server/llm.{type Client}
 import server/world/map
@@ -185,6 +186,40 @@ fn client_message(session: Session, msg: protocol.ClientMsg, conn) -> Session {
       session
     }
     protocol.RequestMap, None -> session
+    protocol.RequestDebug(room_id), Some(_) ->
+      case
+        session.deps.dev_tools,
+        store.load_room(session.deps.store, room_id)
+      {
+        True, Ok(room_data) -> {
+          let debug = store.load_debug(session.deps.store, room_id)
+          send(
+            conn,
+            protocol.Debug(protocol.DebugView(
+              room_id:,
+              name: room_data.name,
+              description: room_data.description,
+              picture: room_data.picture,
+              features: room_data.features,
+              items: room_data.items,
+              image_prompt_sent: debug.image_prompt,
+              image_seed: debug.image_seed,
+              image_prompt_now: art.image_prompt(room_data),
+              builder_prompt: debug.builder_prompt,
+              attempts: list.map(debug.attempts, fn(a) {
+                protocol.DebugAttempt(a.feedback, a.reply, a.problem)
+              }),
+            )),
+          )
+          session
+        }
+        True, Error(Nil) -> session
+        False, _ -> {
+          system(conn, "That isn't available on this server.")
+          session
+        }
+      }
+    protocol.RequestDebug(_), None -> session
   }
 }
 
