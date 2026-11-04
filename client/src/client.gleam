@@ -37,6 +37,12 @@ fn ffi_scroll_log() -> Nil
 @external(javascript, "./client_ffi.mjs", "focusInput")
 fn ffi_focus_input() -> Nil
 
+@external(javascript, "./client_ffi.mjs", "deviceKey")
+fn ffi_device_key() -> String
+
+@external(javascript, "./client_ffi.mjs", "buzz")
+fn ffi_buzz() -> Nil
+
 @external(javascript, "./client_ffi.mjs", "focusElement")
 fn ffi_focus(id: String) -> Nil
 
@@ -100,6 +106,17 @@ type Model {
     /// The map overlay, while open. `None` with `map_open` = waiting for it.
     map: Option(worldmap.State),
     map_open: Bool,
+    /// Phone: the ⋯ sheet (leave, developer tools).
+    more_open: Bool,
+    /// Touch-and-hold on an exit: which one, and a token so a hold timer
+    /// that fires after the finger lifted (or a newer press) is ignored.
+    pressing: Option(protocol.ExitView),
+    press_token: Int,
+    /// The hold showed a glimpse: swallow the tap that follows lifting.
+    held: Bool,
+    /// This player connected again from another tab or window of this
+    /// browser, which took over. Don't reconnect until asked.
+    replaced: Bool,
     /// The way out being hovered or focused: its hint shows under the chips.
     glimpse: Option(protocol.ExitView),
   )
@@ -120,6 +137,14 @@ type Msg {
   Leave
   OpenMap
   MapMsg(worldmap.Msg)
+  PlayHere
+  ToggleMore
+  ExitTap(String)
+  PressStart(protocol.ExitView)
+  PressHeld(Int)
+  PressEnd
+  PressCancel
+  Noop
   Glimpse(protocol.ExitView)
   Unglimpse
   AskReset
@@ -151,6 +176,11 @@ fn init(_) -> #(Model, Effect(Msg)) {
       glimpse: None,
       map: None,
       map_open: False,
+      more_open: False,
+      pressing: None,
+      press_token: 0,
+      held: False,
+      replaced: False,
     ),
     connect(),
   )
@@ -177,11 +207,12 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       case model.name, model.pending_name {
         Some(name), _ | None, Some(name) -> #(
           Model(..model, pending_name: None),
-          send(model, protocol.Hello(name)),
+          send(model, protocol.Hello(name, ffi_device_key())),
         )
         None, None -> #(model, effect.none())
       }
     }
+    Closed if model.replaced -> #(Model(..model, socket: None), effect.none())
     Closed -> #(
       add(
         Model(..model, socket: None),
@@ -202,7 +233,10 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         "" -> #(model, effect.none())
         name ->
           case model.socket {
-            Some(_) -> #(model, send(model, protocol.Hello(name)))
+            Some(_) -> #(
+              model,
+              send(model, protocol.Hello(name, ffi_device_key())),
+            )
             None -> #(Model(..model, pending_name: Some(name)), effect.none())
           }
       }
@@ -228,6 +262,41 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     Key("ArrowUp") -> recall(model, model.history_pos + 1)
     Key("ArrowDown") -> recall(model, model.history_pos - 1)
     Key(_) -> #(model, effect.none())
+    PlayHere -> #(Model(..model, replaced: False), connect())
+    ToggleMore -> #(Model(..model, more_open: !model.more_open), effect.none())
+    Noop -> #(model, effect.none())
+    ExitTap(direction) ->
+      case model.held {
+        // The tap at the end of a hold: it was a look, not a step.
+        True -> #(Model(..model, held: False), effect.none())
+        False -> {
+          let #(model, eff) = run(model, "go " <> direction)
+          #(
+            model,
+            effect.batch([eff, effect.from(fn(_) { ffi_focus_input() })]),
+          )
+        }
+      }
+    PressStart(exit) -> {
+      let token = model.press_token + 1
+      #(
+        Model(..model, pressing: Some(exit), press_token: token, held: False),
+        effect.from(fn(dispatch) {
+          ffi_after(450, fn() { dispatch(PressHeld(token)) })
+        }),
+      )
+    }
+    PressHeld(token) ->
+      case model.pressing, token == model.press_token {
+        Some(exit), True -> #(
+          Model(..model, glimpse: Some(exit), held: True),
+          effect.from(fn(_) { ffi_buzz() }),
+        )
+        _, _ -> #(model, effect.none())
+      }
+    PressEnd -> #(Model(..model, pressing: None), effect.none())
+    // The finger slid (scrolling the row of chips): no hold.
+    PressCancel -> #(Model(..model, pressing: None), effect.none())
     OpenMap -> #(
       Model(..model, map_open: True),
       send(model, protocol.RequestMap),
@@ -242,7 +311,7 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
     RetryLogin -> #(
       Model(..model, retries: model.retries + 1),
-      send(model, protocol.Hello(model.name_input)),
+      send(model, protocol.Hello(model.name_input, ffi_device_key())),
     )
     // Forget the saved name and start again at the name screen. Position and
     // inventory stay on the server under the old name.
@@ -312,6 +381,10 @@ fn receive(model: Model, msg: ServerMsg) -> #(Model, Effect(Msg)) {
         System,
         "Someone named " <> name <> " is already wandering the fog.",
       ),
+      effect.none(),
+    )
+    protocol.Replaced -> #(
+      Model(..model, replaced: True, map: None, map_open: False),
       effect.none(),
     )
     protocol.Map(view) ->
@@ -416,6 +489,17 @@ fn scroll() -> Effect(Msg) {
 // VIEW ------------------------------------------------------------------------
 
 fn view(model: Model) -> Element(Msg) {
+  use <- bool_guard(model.replaced, fn() {
+    html.main([class("login")], [
+      html.h1([], [text("Vellmoor")]),
+      html.p([class("tagline")], [
+        text("You're playing in another window or tab."),
+      ]),
+      html.button([class("chip play-here"), event.on_click(PlayHere)], [
+        text("Play here instead"),
+      ]),
+    ])
+  })
   case model.name {
     None -> view_login(model)
     Some(_) -> view_game(model)
@@ -462,29 +546,49 @@ fn bool_guard(when: Bool, then: fn() -> a, otherwise: fn() -> a) -> a {
   }
 }
 
+/// One set of elements, arranged by CSS: on a wide screen the picture and
+/// actions sit beside the story; on a phone the picture is a banner (that
+/// shrinks while typing), the story fills the middle, and the actions and
+/// command box are pinned to the bottom, above the keyboard.
 fn view_game(model: Model) -> Element(Msg) {
   html.main([class("game")], [
     case model.map {
       Some(state) -> element.map(worldmap.view(state), MapMsg)
       None -> element.none()
     },
-    html.section([class("scene")], [view_art(model.room), view_actions(model)]),
-    html.section([class("story")], [
-      html.div([attribute.id("log"), class("log")], [
-        view_log_entries(model.log),
-      ]),
-      html.form([class("prompt"), event.on_submit(fn(_) { Submit })], [
-        html.span([class("caret")], [text("›")]),
-        html.input([
-          attribute.id("command"),
-          attribute.placeholder("What do you do?"),
-          attribute.value(model.input),
-          attribute.autocomplete("off"),
-          event.on_input(Input),
-          event.on_keydown(Key),
-        ]),
-      ]),
+    view_art(model.room),
+    view_actions(model),
+    // Phone: a held glimpse floats above the action row (inside the row it
+    // would be clipped by its sideways scrolling).
+    case model.glimpse {
+      Some(e) ->
+        html.p([class("glimpse-float")], [
+          html.span([class("glimpse-dir")], [text(e.direction)]),
+          text(e.hint),
+        ])
+      None -> element.none()
+    },
+    html.div([attribute.id("log"), class("log")], [
+      view_log_entries(model.log),
     ]),
+    html.form([class("prompt"), event.on_submit(fn(_) { Submit })], [
+      html.span([class("caret")], [text("›")]),
+      html.input([
+        attribute.id("command"),
+        attribute.placeholder("What do you do?"),
+        attribute.value(model.input),
+        attribute.autocomplete("off"),
+        attribute.attribute("autocapitalize", "off"),
+        attribute.attribute("enterkeyhint", "send"),
+        event.on_input(Input),
+        event.on_keydown(Key),
+      ]),
+      html.button([class("send"), attribute.title("Send")], [text("↵")]),
+    ]),
+    case model.more_open {
+      True -> view_more_sheet(model)
+      False -> element.none()
+    },
   ])
 }
 
@@ -499,18 +603,29 @@ fn view_art(room: Option(RoomView)) -> Element(Msg) {
     case room {
       Some(r) ->
         html.figcaption([], [
-          html.div([], [
+          html.div([class("place")], [
             html.span([class("region")], [text(r.region)]),
-            text(r.name),
+            html.span([class("place-name")], [text(r.name)]),
           ]),
-          html.button(
-            [
-              class("chip map-button"),
-              attribute.title("Open your map"),
-              event.on_click(OpenMap),
-            ],
-            [text("Map")],
-          ),
+          html.div([class("caption-buttons")], [
+            html.button(
+              [
+                class("chip map-button"),
+                attribute.title("Open your map"),
+                event.on_click(OpenMap),
+              ],
+              [text("Map")],
+            ),
+            html.button(
+              [
+                class("chip more-button"),
+                attribute.title("More"),
+                attribute.attribute("aria-label", "More"),
+                event.on_click(ToggleMore),
+              ],
+              [text("⋯")],
+            ),
+          ]),
         ])
       None -> element.none()
     },
@@ -539,14 +654,32 @@ fn view_actions(model: Model) -> Element(Msg) {
             html.span([class("person")], [text(p)])
           }),
         ),
-        html.div([class("group leave")], [
-          html.button([class("link"), event.on_click(Leave)], [
-            text("Leave Vellmoor (change name)"),
+        // On a phone these live in the ⋯ sheet instead.
+        html.div([class("wide-only")], [
+          html.div([class("group leave")], [
+            html.button([class("link"), event.on_click(Leave)], [
+              text("Leave Vellmoor (change name)"),
+            ]),
           ]),
+          view_dev_tools(model),
         ]),
-        view_dev_tools(model),
       ])
   }
+}
+
+/// Phone: the things that don't earn a place on screen all the time.
+fn view_more_sheet(model: Model) -> Element(Msg) {
+  html.div([class("sheet-backdrop"), event.on_click(ToggleMore)], [
+    html.div([class("sheet"), event.on_click(Noop) |> event.stop_propagation], [
+      html.button([class("chip"), event.on_click(Leave)], [
+        text("Leave Vellmoor (change name)"),
+      ]),
+      view_dev_tools(model),
+      html.button([class("link"), event.on_click(ToggleMore)], [
+        text("Close"),
+      ]),
+    ]),
+  ])
 }
 
 fn view_dev_tools(model: Model) -> Element(Msg) {
@@ -579,8 +712,9 @@ fn view_dev_tools(model: Model) -> Element(Msg) {
   }
 }
 
-/// Exit chips, and beneath them a glimpse along whichever one is under the
-/// pointer (or keyboard focus): looking without going.
+/// Exit chips, and beneath them a glimpse along one: looking without going.
+/// With a mouse, hover (or keyboard focus) glimpses; on a touch screen,
+/// press and hold. A tap or click goes.
 fn view_exits(
   exits: List(protocol.ExitView),
   glimpse: Option(protocol.ExitView),
@@ -588,22 +722,30 @@ fn view_exits(
   case exits {
     [] -> element.none()
     _ ->
-      html.div([class("group")], [
+      html.div([class("group exits")], [
         html.h3([], [text("Ways out")]),
         html.div(
           [class("chips")],
           list.map(exits, fn(e) {
             html.button(
               [
-                class("chip"),
+                class("chip exit"),
                 attribute.attribute("aria-description", e.hint),
-                event.on_click(Run("go " <> e.direction)),
+                event.on_click(ExitTap(e.direction)),
                 event.on("mouseenter", decode.success(Glimpse(e))),
                 event.on("focus", decode.success(Glimpse(e))),
                 event.on("mouseleave", decode.success(Unglimpse)),
                 event.on("blur", decode.success(Unglimpse)),
+                event.on("touchstart", decode.success(PressStart(e))),
+                event.on("touchend", decode.success(PressEnd)),
+                event.on("touchmove", decode.success(PressCancel)),
+                event.on("contextmenu", decode.success(Noop))
+                  |> event.prevent_default,
               ],
-              [text(e.direction)],
+              [
+                html.span([class("arrow")], [text(arrow(e.direction))]),
+                text(e.direction),
+              ],
             )
           }),
         ),
@@ -615,10 +757,27 @@ fn view_exits(
             ])
           None ->
             html.p([class("glimpse idle")], [
-              text("Hover a way out to glimpse it, or type “look north”."),
+              html.span([class("for-mouse")], [
+                text("Hover a way out to glimpse it, or type “look north”."),
+              ]),
+              html.span([class("for-touch")], [
+                text("Hold a way out to glimpse it."),
+              ]),
             ])
         },
       ])
+  }
+}
+
+fn arrow(direction: String) -> String {
+  case direction {
+    "north" -> "↑"
+    "south" -> "↓"
+    "east" -> "→"
+    "west" -> "←"
+    "up" -> "⤒"
+    "down" -> "⤓"
+    _ -> "•"
   }
 }
 

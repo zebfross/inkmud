@@ -8,6 +8,7 @@ import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import lustre/attribute.{type Attribute, attribute, class}
 import lustre/element.{type Element, text}
@@ -25,6 +26,8 @@ pub type State {
     pan_y: Float,
     /// Last pointer position while dragging, in screen pixels.
     drag: Option(#(Float, Float)),
+    /// Distance between two fingers at the last pinch step.
+    pinch: Option(Float),
     focus: Option(Int),
     selected: Option(Int),
     hovered: Option(Int),
@@ -37,6 +40,10 @@ pub type Msg {
   DragStart(Float, Float)
   DragMove(x: Float, y: Float, width: Float)
   DragEnd
+  /// Touch: one finger pans, two pinch to zoom.
+  TouchStart(List(#(Float, Float)))
+  TouchMove(points: List(#(Float, Float)), width: Float)
+  TouchEnd
   FocusLevel(Int)
   Select(Int)
   Hover(Option(Int))
@@ -47,7 +54,7 @@ pub type Msg {
 }
 
 pub fn init(view: MapView) -> State {
-  State(view, 1.0, 0.0, 0.0, None, None, None, None)
+  State(view, 1.0, 0.0, 0.0, None, None, None, None, None)
 }
 
 /// New data (the player moved): keep the camera, drop a selection that no
@@ -85,6 +92,27 @@ pub fn update(state: State, msg: Msg) -> State {
         ),
       )
     DragStart(x, y) -> State(..state, drag: Some(#(x, y)))
+    TouchStart(points) ->
+      case points {
+        [p] -> State(..state, drag: Some(p), pinch: None)
+        [p, q, ..] -> State(..state, drag: None, pinch: Some(distance(p, q)))
+        [] -> state
+      }
+    TouchMove(points, width) ->
+      case points, state.pinch {
+        [#(x, y)], _ -> update(state, DragMove(x:, y:, width:))
+        [p, q, ..], Some(before) -> {
+          let now = distance(p, q)
+          State(
+            ..state,
+            zoom: clamp(state.zoom *. now /. float.max(before, 1.0), 0.4, 4.0),
+            pinch: Some(now),
+            selected: None,
+          )
+        }
+        _, _ -> state
+      }
+    TouchEnd -> State(..state, drag: None, pinch: None)
     DragMove(x, y, width) ->
       case state.drag {
         None -> state
@@ -125,6 +153,12 @@ pub fn update(state: State, msg: Msg) -> State {
     Dismiss -> State(..state, selected: None)
     Close -> state
   }
+}
+
+fn distance(a: #(Float, Float), b: #(Float, Float)) -> Float {
+  let dx = a.0 -. b.0
+  let dy = a.1 -. b.1
+  float.square_root(dx *. dx +. dy *. dy) |> result.unwrap(0.0)
 }
 
 fn clamp(v: Float, lo: Float, hi: Float) -> Float {
@@ -262,6 +296,17 @@ pub fn view(state: State) -> Element(Msg) {
             decode.success(DragMove(x:, y:, width:))
           }),
           event.on("mouseup", decode.success(DragEnd)),
+          event.on("touchstart", touches() |> decode.map(TouchStart)),
+          event.on("touchmove", {
+            use points <- decode.then(touches())
+            use width <- decode.subfield(
+              ["currentTarget", "clientWidth"],
+              number(),
+            )
+            decode.success(TouchMove(points:, width:))
+          }),
+          event.on("touchend", decode.success(TouchEnd)),
+          event.on("touchcancel", decode.success(TouchEnd)),
           event.on_click(Dismiss),
           event.on("mouseleave", decode.success(DragEnd)),
           event.on("wheel", {
@@ -293,6 +338,27 @@ fn pointer(make: fn(Float, Float) -> Msg) -> decode.Decoder(Msg) {
   use x <- decode.field("clientX", number())
   use y <- decode.field("clientY", number())
   decode.success(make(x, y))
+}
+
+/// The first two fingers on the screen, in screen pixels.
+fn touches() -> decode.Decoder(List(#(Float, Float))) {
+  let point = fn(i) {
+    decode.at(["touches", int.to_string(i)], {
+      use x <- decode.field("clientX", number())
+      use y <- decode.field("clientY", number())
+      decode.success(#(x, y))
+    })
+  }
+  use count <- decode.subfield(["touches", "length"], decode.int)
+  case count {
+    0 -> decode.success([])
+    1 -> point(0) |> decode.map(fn(p) { [p] })
+    _ -> {
+      use p <- decode.then(point(0))
+      use q <- decode.then(point(1))
+      decode.success([p, q])
+    }
+  }
 }
 
 fn number() -> decode.Decoder(Float) {
@@ -416,8 +482,12 @@ fn view_room(state: State, room: MapRoom) -> List(Element(Msg)) {
   let map = state.view
   let #(cx, cy) = at(map, room)
   let here = room.id == map.current
-  let named =
-    here || state.hovered == Some(room.id) || state.selected == Some(room.id)
+  // One name at a time, so neighbours' labels never overlap: the room
+  // picked (or pointed at), or else the room you're in.
+  let named = case option.or(state.selected, state.hovered) {
+    Some(id) -> id == room.id
+    None -> here
+  }
   let stubs =
     list.map(room.unexplored, fn(d) {
       let #(dx, dy) = case d {

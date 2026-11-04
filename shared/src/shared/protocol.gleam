@@ -9,8 +9,10 @@ import gleam/option.{type Option, None}
 // CLIENT → SERVER -------------------------------------------------------------
 
 pub type ClientMsg {
-  /// First message on a connection: who is playing.
-  Hello(name: String)
+  /// First message on a connection: who is playing, and a random key this
+  /// browser keeps, so reconnecting from the same browser can take over
+  /// from a connection that hasn't closed yet.
+  Hello(name: String, device: String)
   /// Anything typed (or clicked) in the command box.
   Command(text: String)
   /// Dev only (the server refuses it otherwise): wipe and rebuild the world.
@@ -21,8 +23,12 @@ pub type ClientMsg {
 
 pub fn encode_client(msg: ClientMsg) -> String {
   case msg {
-    Hello(name:) ->
-      json.object([#("t", json.string("hello")), #("name", json.string(name))])
+    Hello(name:, device:) ->
+      json.object([
+        #("t", json.string("hello")),
+        #("name", json.string(name)),
+        #("device", json.string(device)),
+      ])
     Command(text:) ->
       json.object([
         #("t", json.string("command")),
@@ -40,7 +46,8 @@ pub fn decode_client(text: String) -> Result(ClientMsg, Nil) {
     case tag {
       "hello" -> {
         use name <- decode.field("name", decode.string)
-        decode.success(Hello(name:))
+        use device <- decode.optional_field("device", "", decode.string)
+        decode.success(Hello(name:, device:))
       }
       "command" -> {
         use text <- decode.field("text", decode.string)
@@ -111,6 +118,10 @@ pub type ServerMsg {
   /// Someone with this name is already connected (perhaps this same player,
   /// on a connection the server hasn't seen close yet).
   NameTaken(name: String)
+  /// This player connected again from the same browser (another tab, or a
+  /// phone that woke up): this connection is closing. Don't reconnect on
+  /// your own, or the two would keep taking the name from each other.
+  Replaced
   /// The player's map, in answer to RequestMap.
   Map(MapView)
   Room(RoomView)
@@ -131,6 +142,7 @@ pub fn encode_server(msg: ServerMsg) -> String {
         #("dev", json.bool(dev_tools)),
       ])
     WorldReset -> json.object([#("t", json.string("world_reset"))])
+    Replaced -> json.object([#("t", json.string("replaced"))])
     NameTaken(name:) ->
       json.object([
         #("t", json.string("name_taken")),
@@ -259,6 +271,7 @@ pub fn decode_server(text: String) -> Result(ServerMsg, Nil) {
         decode.success(Welcome(name:, dev_tools:))
       }
       "world_reset" -> decode.success(WorldReset)
+      "replaced" -> decode.success(Replaced)
       "map" -> {
         let map_room = {
           use id <- decode.field("id", decode.int)

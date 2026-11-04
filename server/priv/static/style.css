@@ -63,12 +63,21 @@ button, input { font: inherit; color: inherit; }
 .login-form button:hover:not(:disabled), .chip:hover { border-color: var(--accent); color: var(--accent); }
 .login-form button:disabled { opacity: .6; cursor: default; }
 
-/* Game */
+/* Game: one set of elements, arranged by named grid areas. */
 .game {
-  display: grid; grid-template-columns: minmax(280px, 512px) 1fr; gap: 2rem;
-  height: 100vh; padding: 1.5rem; max-width: 1280px; margin: 0 auto;
+  display: grid; height: 100vh; height: 100dvh; max-width: 1280px; margin: 0 auto;
+  padding: 1.5rem; column-gap: 2rem; row-gap: 1.25rem;
+  grid-template-columns: minmax(280px, 512px) 1fr;
+  grid-template-rows: auto 1fr auto;
+  grid-template-areas: "art log" "actions log" "actions prompt";
 }
-.scene { display: flex; flex-direction: column; gap: 1.25rem; overflow-y: auto; }
+.art { grid-area: art; }
+/* Short desktop windows: keep room for the actions under the picture. */
+@media (min-width: 761px) { .picture { max-height: 56vh; } }
+.actions { grid-area: actions; overflow-y: auto; min-height: 0; }
+.log { grid-area: log; }
+.prompt { grid-area: prompt; }
+.log, .prompt { border-left: 1px solid var(--rule); padding-left: 2rem; margin-left: -2rem; }
 .art { margin: 0; }
 .picture {
   display: block; width: 100%; aspect-ratio: 1; border-radius: 3px;
@@ -83,6 +92,10 @@ button, input { font: inherit; color: inherit; }
 @keyframes develop { from { opacity: 0; filter: blur(6px) sepia(.6); } to { opacity: 1; filter: none; } }
 @keyframes breathe { 50% { opacity: .55; } }
 figcaption { margin-top: .6rem; font-size: 1.15rem; font-weight: 600; }
+.place-name { display: block; }
+.caption-buttons { display: flex; gap: .4rem; }
+.more-button, .send, .for-touch, .glimpse-float { display: none; }
+.arrow { margin-right: .3rem; color: var(--ink-faint); }
 .region {
   display: block; font: 12px/1.4 "IBM Plex Mono", monospace; letter-spacing: .12em;
   text-transform: uppercase; color: var(--ink-faint); font-weight: 400;
@@ -114,8 +127,7 @@ figcaption { margin-top: .6rem; font-size: 1.15rem; font-weight: 600; }
 .chip.danger:hover { border-color: var(--accent); background: var(--paper-deep); }
 .dev-warning { margin: 0 0 .5rem; font-size: .95rem; color: var(--ink-soft); }
 
-.story { display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--rule); padding-left: 2rem; }
-.log { flex: 1; overflow-y: auto; padding-right: .5rem; scroll-behavior: smooth; }
+.log { min-height: 0; overflow-y: auto; padding-right: .5rem; scroll-behavior: smooth; }
 .entry { margin: 0 0 .7rem; max-width: 42rem; }
 .heading {
   font-size: 1.35rem; font-weight: 600; margin: 1.6rem 0 .4rem;
@@ -135,11 +147,84 @@ figcaption { margin-top: .6rem; font-size: 1.15rem; font-weight: 600; }
   flex: 1; min-width: 0; background: transparent; border: 0; outline: none; font-size: 1.05rem;
 }
 
+/* Touch screens: no hover to glimpse with, so say "hold" instead; and no
+   long-press callout or text selection on the chips. */
+@media (hover: none) {
+  .for-mouse { display: none; }
+  .for-touch { display: inline; }
+  .chip { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+}
+
+/* Phone layout: picture banner on top, story in the middle, actions and the
+   command box pinned to the bottom (above the keyboard, which shrinks the
+   dynamic viewport). */
 @media (max-width: 760px) {
   body { font-size: 17px; }
-  .game { grid-template-columns: 1fr; height: auto; min-height: 100vh; padding: 16px; gap: 1rem; }
-  .scene { overflow: visible; }
-  .story { border-left: 0; padding-left: 0; height: 70vh; }
+  .game {
+    padding: 0; gap: 0; column-gap: 0; row-gap: 0;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr auto auto;
+    grid-template-areas: "art" "log" "actions" "prompt";
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .log, .prompt { border-left: 0; margin-left: 0; }
+
+  /* Banner: the picture cropped wide, with the place name over it. */
+  .art { position: relative; }
+  .picture { aspect-ratio: auto; height: 32vh; height: 32dvh; border-radius: 0; box-shadow: none; transition: height .25s ease; }
+  .picture.pending { border: 0; border-bottom: 1px dashed var(--rule); }
+  figcaption {
+    position: absolute; left: 0; right: 0; bottom: 0; margin: 0;
+    padding: 2.5rem 16px 10px; align-items: flex-end;
+    background: linear-gradient(to top, var(--paper) 15%, transparent);
+    padding-top: max(2.5rem, env(safe-area-inset-top));
+  }
+  .place-name { font-size: 1.1rem; line-height: 1.2; }
+  .more-button { display: inline-block; }
+  /* Typing: the banner shrinks to a strip so the story stays visible. */
+  .game:has(#command:focus) .picture { height: 72px; }
+
+  .log { padding: 14px 16px 8px; }
+  .entry { max-width: none; }
+
+  /* Actions: one sideways-scrolling row of chips. */
+  .actions {
+    flex-direction: row; gap: .4rem; overflow-x: auto; overflow-y: hidden;
+    padding: 8px 16px; border-top: 1px solid var(--rule); scrollbar-width: none;
+    align-items: flex-start;
+  }
+  .actions::-webkit-scrollbar { display: none; }
+  .actions .group { flex: none; display: contents; }
+  .actions .group h3, .wide-only, .glimpse.idle { display: none; }
+  .actions .chips { display: contents; }
+  .chip { flex: none; min-height: 40px; padding: .35rem .85rem; font-size: 1rem; white-space: nowrap; }
+  .person { flex: none; align-self: center; white-space: nowrap; }
+  /* A held glimpse floats just above the action row, in the same grid cell. */
+  .actions .glimpse { display: none; }
+  .glimpse-float {
+    display: block; grid-area: actions; align-self: start; z-index: 2;
+    margin: 0 12px; transform: translateY(calc(-100% - 8px));
+    padding: .6rem .8rem; background: var(--chip); color: var(--ink-soft); font-style: italic;
+    border: 1px solid var(--rule); border-radius: 6px; box-shadow: 0 4px 18px var(--shadow);
+    pointer-events: none;
+  }
+
+  .prompt { padding: 6px 12px 8px 16px; border-top: 1px solid var(--rule); }
+  /* 16px or more, or iOS zooms the page when the box is tapped. */
+  .prompt input { font-size: 17px; padding: .5rem 0; }
+  .send {
+    display: inline-block; min-width: 44px; min-height: 40px; border-radius: 4px;
+    background: var(--chip); border: 1px solid var(--rule); color: var(--accent); font-size: 1.1rem;
+  }
+
+  /* The ⋯ sheet. */
+  .sheet-backdrop { position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.35); display: flex; align-items: flex-end; }
+  .sheet {
+    width: 100%; background: var(--paper); border-top: 1px solid var(--rule); border-radius: 12px 12px 0 0;
+    padding: 18px 16px calc(18px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 14px;
+    align-items: flex-start;
+  }
+  .sheet .dev { margin: 0; padding-top: 14px; width: 100%; }
 }
 
 /* Map */
@@ -157,7 +242,7 @@ figcaption { display: flex; justify-content: space-between; align-items: flex-en
 .map-count { color: var(--ink-faint); font: 13px/1.4 "IBM Plex Mono", monospace; }
 .map-buttons { margin-left: auto; display: flex; gap: .4rem; }
 .map-buttons .chip { min-width: 2.4rem; }
-.map-canvas { flex: 1; width: 100%; min-height: 0; cursor: grab; user-select: none; }
+.map-canvas { flex: 1; width: 100%; min-height: 0; cursor: grab; user-select: none; touch-action: none; }
 .map-canvas.dragging { cursor: grabbing; }
 .map-hint {
   position: absolute; bottom: 12px; left: 0; right: 0; margin: 0; text-align: center;
@@ -197,6 +282,16 @@ figcaption { display: flex; justify-content: space-between; align-items: flex-en
 .map-card-text { padding: .7rem .9rem .8rem; display: flex; flex-direction: column; gap: .15rem; }
 .map-card-meta { color: var(--ink-soft); font-size: .9rem; }
 @media (max-width: 760px) {
-  .map-bar { padding: 12px 16px; }
-  .map-card { left: 16px; bottom: 36px; }
+  .map-bar { padding: 12px 16px; padding-top: max(12px, env(safe-area-inset-top)); gap: .25rem .75rem; }
+  .map-bar h2 { font-size: 1.1rem; }
+  .map-buttons .chip { min-width: 44px; min-height: 40px; }
+  .map-hint { bottom: calc(8px + env(safe-area-inset-bottom)); font-size: 11px; padding: 0 16px; }
+  /* The card: a compact strip at the bottom, picture beside the text. */
+  .map-card {
+    left: 12px; right: 12px; width: auto; bottom: calc(34px + env(safe-area-inset-bottom));
+    flex-direction: row; align-items: stretch;
+  }
+  .map-card img { width: 96px; aspect-ratio: 1; flex: none; }
+  .map-card-text { padding: .55rem .75rem; }
+  .map-card-meta { font-size: .85rem; }
 }

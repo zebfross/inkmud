@@ -23,8 +23,32 @@ export function scrollLog() {
 }
 
 export function focusInput() {
+  // On a touch screen this would pop the keyboard up after every tap.
+  if (matchMedia("(pointer: coarse)").matches) return;
   const input = document.getElementById("command");
   if (input) input.focus();
+}
+
+// A random key this browser keeps: reconnecting with the same name from the
+// same browser takes over from a connection that hasn't closed yet.
+export function deviceKey() {
+  try {
+    let key = localStorage.getItem("inkmud.device");
+    if (!key) {
+      key = crypto.randomUUID?.() ?? String(Math.random()).slice(2) + Date.now();
+      localStorage.setItem("inkmud.device", key);
+    }
+    return key;
+  } catch {
+    return "";
+  }
+}
+
+// A tiny haptic tick where the device supports it (Android); silent elsewhere.
+export function buzz() {
+  try {
+    navigator.vibrate?.(8);
+  } catch {}
 }
 
 export function focusElement(id) {

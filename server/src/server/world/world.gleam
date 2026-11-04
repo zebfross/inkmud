@@ -46,11 +46,34 @@ pub type Message {
   Built(key: Key, result: Result(builder.Built, Nil))
   /// `on_reset` is how a dev reset tells this player's session to start over
   /// in the new world's first room (whose id it is given).
-  Login(name: String, on_reset: fn(Int) -> Nil, reply: Subject(Bool))
-  Logout(name: String)
+  ///
+  /// `device` identifies the browser (a random key it keeps). The same
+  /// player reconnecting from the same browser — a refresh, a phone waking
+  /// up while its old connection lingers — takes over: the old session is
+  /// told via its `kick`. Another browser asking for a name in use is
+  /// refused.
+  Login(
+    name: String,
+    device: String,
+    session: Pid,
+    on_reset: fn(Int) -> Nil,
+    kick: fn() -> Nil,
+    reply: Subject(Bool),
+  )
+  /// Only counts if `session` is still the one holding the name.
+  Logout(name: String, session: Pid)
   /// Dev only: wipe the world, write the seed again, and send every
   /// connected player to the start. Replies with the new start room's id.
   Reset(reply: Subject(Int))
+}
+
+type Online {
+  Online(
+    device: String,
+    session: Pid,
+    on_reset: fn(Int) -> Nil,
+    kick: fn() -> Nil,
+  )
 }
 
 type State {
@@ -60,7 +83,7 @@ type State {
     builder: Client,
     art: Subject(art.Message),
     rooms: Dict(Int, Subject(room.Message)),
-    online: Dict(String, fn(Int) -> Nil),
+    online: Dict(String, Online),
     /// Builds asked for, and who is waiting on each.
     waiting: Dict(Key, List(fn(Arrival) -> Nil)),
     /// Not started yet, in priority order.
@@ -107,9 +130,18 @@ pub fn get_room(
 pub fn login(
   world: Subject(Message),
   name: String,
+  device: String,
   on_reset: fn(Int) -> Nil,
+  kick: fn() -> Nil,
 ) -> Bool {
-  process.call(world, 5000, Login(name, on_reset, _))
+  process.call(world, 5000, Login(
+    name,
+    device,
+    process.self(),
+    on_reset,
+    kick,
+    _,
+  ))
 }
 
 pub fn reset(world: Subject(Message)) -> Int {
@@ -124,20 +156,40 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       actor.continue(state)
     }
 
-    Login(name, on_reset, reply) -> {
-      let taken = dict.has_key(state.online, name)
-      process.send(reply, !taken)
-      case taken {
-        True -> actor.continue(state)
-        False ->
+    Login(name, device, session, on_reset, kick, reply) -> {
+      let allowed = case dict.get(state.online, name) {
+        Error(Nil) -> True
+        Ok(old) if device != "" && old.device == device -> {
+          old.kick()
+          True
+        }
+        Ok(_) -> False
+      }
+      process.send(reply, allowed)
+      case allowed {
+        False -> actor.continue(state)
+        True ->
           actor.continue(
-            State(..state, online: dict.insert(state.online, name, on_reset)),
+            State(
+              ..state,
+              online: dict.insert(
+                state.online,
+                name,
+                Online(device:, session:, on_reset:, kick:),
+              ),
+            ),
           )
       }
     }
 
-    Logout(name) ->
-      actor.continue(State(..state, online: dict.delete(state.online, name)))
+    Logout(name, session) ->
+      case dict.get(state.online, name) {
+        Ok(entry) if entry.session == session ->
+          actor.continue(
+            State(..state, online: dict.delete(state.online, name)),
+          )
+        _ -> actor.continue(state)
+      }
 
     Reset(reply) -> {
       // Stop everything that could still write into the old world: room
@@ -149,7 +201,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       let start = store.wipe_and(state.store, seed.run)
       logging.log(logging.Info, "world reset by a developer")
       process.send(reply, start)
-      dict.each(state.online, fn(_, on_reset) { on_reset(start) })
+      dict.each(state.online, fn(_, entry) { entry.on_reset(start) })
       actor.continue(
         State(
           ..state,

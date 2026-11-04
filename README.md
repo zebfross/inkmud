@@ -52,6 +52,15 @@ browser (Lustre) ──websocket──▶ Gleam server
   joins that room, so walking around a block brings you back — loops form on
   their own. A new room is also joined to any neighbour whose exits point
   into its cell. Worlds from before coordinates are placed once at startup.
+- **Phones are first-class.** On a narrow screen the picture becomes a banner
+  (shrinking while you type), the story fills the middle, and a sideways row
+  of actions plus the command box sit at the bottom. Hold a way out to
+  glimpse it; tap to go. The map pans with one finger and pinches to zoom.
+- **Same browser, same player.** Each browser keeps a random device key. A
+  reconnect with your name from the same browser (a refresh, a phone waking
+  up while its old connection lingers, a second tab) takes over and the old
+  connection is told to stand down; another browser using a name in play is
+  refused.
 - **Your map** (the Map button) shows the rooms you've visited at their grid
   positions, each floor a tilted plane stacked above the one below.
 - **Engine owns the truth.** The model proposes rooms in a fixed JSON shape;

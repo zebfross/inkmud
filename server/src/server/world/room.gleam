@@ -3,7 +3,8 @@
 //// order, so exactly one of them gets it. Everyone present hears the same
 //// thing happen.
 
-import gleam/erlang/process.{type Subject}
+import gleam/dict.{type Dict}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
@@ -20,8 +21,11 @@ pub type Notify =
   fn(ServerMsg) -> Nil
 
 pub type Message {
-  Enter(name: String, notify: Notify, from: Option(Direction))
-  Leave(name: String, toward: Option(Direction))
+  /// `owner` is the player's session process. When the same player
+  /// reconnects (taking over from a stale connection), the old session's
+  /// late Leave carries the old owner and is ignored.
+  Enter(name: String, owner: Pid, notify: Notify, from: Option(Direction))
+  Leave(name: String, owner: Pid, toward: Option(Direction))
   Look(name: String)
   LookToward(name: String, direction: Direction)
   Take(name: String, query: String)
@@ -44,6 +48,7 @@ type State {
     art: Subject(art.Message),
     room: Room,
     occupants: List(#(String, Notify)),
+    owners: Dict(String, Pid),
     art_requested: Bool,
   )
 }
@@ -61,6 +66,7 @@ pub fn start(
         art: art_queue,
         room:,
         occupants: [],
+        owners: dict.new(),
         art_requested: False,
       )
       |> actor.initialised
@@ -74,7 +80,8 @@ pub fn start(
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
-    Enter(name, notify, from) -> {
+    Enter(name, owner, notify, from) -> {
+      let state = State(..state, owners: dict.insert(state.owners, name, owner))
       let arrival = case from {
         Some(d) ->
           name <> " arrives from the " <> types.direction_name(d) <> "."
@@ -91,20 +98,27 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       request_art(state) |> actor.continue
     }
 
-    Leave(name, toward) -> {
-      let state =
-        State(
-          ..state,
-          occupants: list.filter(state.occupants, fn(o) { o.0 != name }),
-        )
-      let text = case toward {
-        Some(d) -> name <> " leaves " <> types.direction_name(d) <> "."
-        None -> name <> " fades into the fog."
+    Leave(name, owner, toward) ->
+      case dict.get(state.owners, name) == Ok(owner) {
+        // From a session that has since been replaced: not this player
+        // leaving.
+        False -> actor.continue(state)
+        True -> {
+          let state =
+            State(
+              ..state,
+              occupants: list.filter(state.occupants, fn(o) { o.0 != name }),
+              owners: dict.delete(state.owners, name),
+            )
+          let text = case toward {
+            Some(d) -> name <> " leaves " <> types.direction_name(d) <> "."
+            None -> name <> " fades into the fog."
+          }
+          broadcast(state, Line(Social, text))
+          refresh_all(state)
+          actor.continue(state)
+        }
       }
-      broadcast(state, Line(Social, text))
-      refresh_all(state)
-      actor.continue(state)
-    }
 
     Look(name) -> {
       case list.key_find(state.occupants, name) {

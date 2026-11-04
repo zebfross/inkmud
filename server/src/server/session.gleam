@@ -43,6 +43,10 @@ pub type Event {
   Interpreted(original: String, room_id: Int, result: Result(String, Nil))
   /// The world was reset; this is the new start room.
   WorldWasReset(start: Int)
+  /// The same player connected from the same browser; this session ends.
+  WasReplaced
+  /// Close the connection (shortly after being replaced).
+  Retire
 }
 
 type Session {
@@ -78,10 +82,10 @@ pub fn handle(req: Request(Connection), deps: Deps) -> Response(ResponseData) {
       case session.name {
         Some(name) -> {
           case session.room {
-            Some(r) -> process.send(r, room.Leave(name, None))
+            Some(r) -> process.send(r, room.Leave(name, process.self(), None))
             None -> Nil
           }
-          process.send(session.deps.world, world.Logout(name))
+          process.send(session.deps.world, world.Logout(name, process.self()))
         }
         None -> Nil
       }
@@ -93,6 +97,17 @@ pub fn handle(req: Request(Connection), deps: Deps) -> Response(ResponseData) {
             Ok(msg) -> mist.continue(client_message(session, msg, conn))
             Error(Nil) -> mist.continue(session)
           }
+        // Replaced by a newer connection from the same browser: say so,
+        // then close a moment later (closing straight away discards the
+        // message before it reaches the browser). Its room and online entry
+        // already belong to the new session; the late Leave and Logout this
+        // one sends on closing are ignored there.
+        mist.Custom(WasReplaced) -> {
+          send(conn, protocol.Replaced)
+          process.send_after(session.self, 1000, Retire)
+          mist.continue(session)
+        }
+        mist.Custom(Retire) -> mist.stop()
         mist.Custom(event) -> mist.continue(on_event(session, event, conn))
         mist.Binary(_) -> mist.continue(session)
         mist.Closed | mist.Shutdown -> mist.stop()
@@ -114,7 +129,7 @@ fn system(conn, text: String) -> Nil {
 
 fn client_message(session: Session, msg: protocol.ClientMsg, conn) -> Session {
   case msg, session.name {
-    protocol.Hello(raw), None ->
+    protocol.Hello(raw, device), None ->
       case clean_name(raw) {
         Error(Nil) -> {
           system(conn, "Pick a name of 2 to 16 letters.")
@@ -122,9 +137,13 @@ fn client_message(session: Session, msg: protocol.ClientMsg, conn) -> Session {
         }
         Ok(name) ->
           case
-            world.login(session.deps.world, name, fn(start) {
-              process.send(session.self, WorldWasReset(start))
-            })
+            world.login(
+              session.deps.world,
+              name,
+              device,
+              fn(start) { process.send(session.self, WorldWasReset(start)) },
+              fn() { process.send(session.self, WasReplaced) },
+            )
           {
             False -> {
               send(conn, protocol.NameTaken(name))
@@ -143,7 +162,7 @@ fn client_message(session: Session, msg: protocol.ClientMsg, conn) -> Session {
             }
           }
       }
-    protocol.Hello(_), Some(_) -> session
+    protocol.Hello(_, _), Some(_) -> session
     protocol.Command(text), Some(_) ->
       run(session, command.parse(text), False, conn)
     protocol.Command(_), None -> session
@@ -200,7 +219,12 @@ fn enter(
       let self = session.self
       process.send(
         r,
-        room.Enter(name, fn(msg) { process.send(self, Out(msg)) }, from),
+        room.Enter(
+          name,
+          process.self(),
+          fn(msg) { process.send(self, Out(msg)) },
+          from,
+        ),
       )
       store.set_player_room(session.deps.store, name, room_id)
       store.record_visit(session.deps.store, name, room_id)
@@ -327,6 +351,8 @@ fn background(session: Session, work: fn(Room, List(String)) -> Event) -> Nil {
 
 fn on_event(session: Session, event: Event, conn) -> Session {
   case event {
+    // Handled in the socket handler, which closes the connection.
+    WasReplaced | Retire -> session
     // A room view sent just before the player left that room arrives
     // after they're somewhere else. It's stale: drop it.
     Out(protocol.Room(view)) if view.id != session.room_id -> session
@@ -352,7 +378,7 @@ fn on_event(session: Session, event: Event, conn) -> Session {
     Moved(d, world.Arrived(id)) -> {
       let assert Some(name) = session.name
       case session.room {
-        Some(r) -> process.send(r, room.Leave(name, Some(d)))
+        Some(r) -> process.send(r, room.Leave(name, process.self(), Some(d)))
         None -> Nil
       }
       enter(session, id, Some(types.opposite(d)), conn)
