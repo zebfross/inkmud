@@ -79,8 +79,8 @@ browser (Lustre) ──websocket──▶ Gleam server
   more helpful finds; wary (3-5) and perilous (6+) bring them in. See
   `builder.odds`.
 - **Light and dark.** Some places below the streets are pitch dark: without
-  a lit lantern you see no description, picture or items, and can only feel
-  your way toward somewhere lit. A lantern burns one unit of oil per step
+  a lit lantern you see no description, picture or items, and the only way
+  out you can find is the way you came in. A lantern burns one unit of oil per step
   into a dark place, warns as it runs low, and goes out; `fill lantern` pours
   in a tin of oil (which turns up in rooms once lanterns exist). Whenever a
   dark place is built and no lantern is free, one is promised to an unbuilt

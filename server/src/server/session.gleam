@@ -61,6 +61,8 @@ type Session {
     room_id: Int,
     room: Option(Subject(room.Message)),
     moving: Bool,
+    /// The way the player came into the room they're in.
+    came_from: Option(Direction),
   )
 }
 
@@ -78,6 +80,7 @@ pub fn handle(req: Request(Connection), deps: Deps) -> Response(ResponseData) {
           room_id: deps.start_room,
           room: None,
           moving: False,
+          came_from: None,
         ),
         Some(selector),
       )
@@ -267,7 +270,13 @@ fn enter(
       store.set_player_room(session.deps.store, name, room_id)
       store.record_visit(session.deps.store, name, room_id)
       process.send(session.deps.world, world.Prefetch(room_id))
-      Session(..session, room_id:, room: Some(r), moving: False)
+      Session(
+        ..session,
+        room_id:,
+        room: Some(r),
+        moving: False,
+        came_from: from,
+      )
     }
     Error(Nil) -> {
       system(
@@ -303,7 +312,7 @@ fn run(session: Session, cmd: Command, interpreted: Bool, conn) -> Session {
           let self = session.self
           process.send(
             session.deps.world,
-            world.Traverse(name, session.room_id, d, fn(a) {
+            world.Traverse(name, session.room_id, d, session.came_from, fn(a) {
               process.send(self, Moved(d, a))
             }),
           )

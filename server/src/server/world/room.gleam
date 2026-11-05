@@ -49,6 +49,9 @@ type State {
     room: Room,
     occupants: List(#(String, Notify)),
     owners: Dict(String, Pid),
+    /// The way each player came in: in the dark, without a light, the only
+    /// way out they can find.
+    entered: Dict(String, Direction),
     art_requested: Bool,
   )
 }
@@ -67,6 +70,7 @@ pub fn start(
         room:,
         occupants: [],
         owners: dict.new(),
+        entered: dict.new(),
         art_requested: False,
       )
       |> actor.initialised
@@ -102,7 +106,15 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 fn handle_seen(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Enter(name, owner, notify, from) -> {
-      let state = State(..state, owners: dict.insert(state.owners, name, owner))
+      let state =
+        State(
+          ..state,
+          owners: dict.insert(state.owners, name, owner),
+          entered: case from {
+            Some(d) -> dict.insert(state.entered, name, d)
+            None -> dict.delete(state.entered, name)
+          },
+        )
       let arrival = case from {
         Some(d) ->
           name <> " arrives from the " <> types.direction_name(d) <> "."
@@ -281,6 +293,19 @@ fn describe(state: State, name: String, notify: Notify) {
   notify(Line(Narration, view.description))
 }
 
+/// An exit someone without a light could still feel their way along:
+/// built, unlocked, and to somewhere lit.
+pub fn leads_to_light(store: Store, e: types.Exit) -> Bool {
+  case e.target, e.lock, e.obstacle {
+    Some(t), None, None ->
+      case store.load_room(store, t) {
+        Ok(beyond) -> !beyond.dark
+        Error(Nil) -> False
+      }
+    _, _, _ -> False
+  }
+}
+
 /// Can this player see here? (Lit places always; dark ones with a light.)
 fn sees(state: State, player: String) -> Bool {
   !state.room.dark || store.has_light(state.store, player)
@@ -372,29 +397,26 @@ fn view(state: State, for: String) -> protocol.RoomView {
         art: room.art_url,
         dark: False,
       )
-    // In the dark: no description, picture or items; only the ways out
-    // that lead back to somewhere lit, which you can feel your way along.
+    // In the dark: no description, picture or items, and only the way
+    // you came in (or, if you didn't come in, say after logging in here,
+    // the ways back toward somewhere lit).
     False ->
       RoomView(
         id: room.id,
         region:,
         name: "Darkness",
-        description: "It is pitch dark. You can't see a thing, though you can feel your way back toward somewhere lit.",
+        description: "It is pitch dark. You can't see a thing; all you can find is the way you came.",
         exits: room.exits
           |> list.filter(fn(e) {
-            case e.target, e.lock {
-              Some(t), None ->
-                case store.load_room(state.store, t) {
-                  Ok(beyond) -> !beyond.dark
-                  Error(Nil) -> False
-                }
-              _, _ -> False
+            case dict.get(state.entered, for) {
+              Ok(back) -> e.direction == back
+              Error(Nil) -> leads_to_light(state.store, e)
             }
           })
           |> list.map(fn(e) {
             ExitView(
               types.direction_name(e.direction),
-              "the way you can feel back toward the light",
+              "the way you came",
               None,
               None,
             )

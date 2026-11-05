@@ -17,7 +17,7 @@ import exception
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import logging
@@ -43,10 +43,13 @@ type Key =
 
 pub type Message {
   GetRoom(id: Int, reply: Subject(Result(Subject(room.Message), Nil)))
+  /// `back`: the way the player came into this room, if known (in the
+  /// dark, without a light, the only way they can go).
   Traverse(
     player: String,
     room_id: Int,
     direction: Direction,
+    back: Option(Direction),
     reply: fn(Arrival) -> Nil,
   )
   Prefetch(room_id: Int)
@@ -220,8 +223,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       )
     }
 
-    Traverse(player, room_id, direction, reply) ->
-      case feel_the_way(state.store, player, room_id, direction) {
+    Traverse(player, room_id, direction, back, reply) ->
+      case feel_the_way(state.store, player, room_id, direction, back) {
         Error(reason) -> {
           reply(Blocked(reason))
           actor.continue(state)
@@ -291,32 +294,33 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
-/// In a dark place without a light, you can't find the ways out: only feel
-/// your way back toward somewhere already lit.
+/// In a dark place without a light you can't find the ways out: only go
+/// back the way you came (or, if that isn't known, toward somewhere lit).
 fn feel_the_way(
   store: Store,
   player: String,
   room_id: Int,
   direction: Direction,
+  back: Option(Direction),
 ) -> Result(Nil, String) {
   case store.load_room(store, room_id) {
     Ok(from) if from.dark ->
       case store.has_light(store, player) {
         True -> Ok(Nil)
         False -> {
-          let lit = case types.find_exit(from, direction) {
-            Ok(types.Exit(target: Some(t), lock: None, ..)) ->
-              case store.load_room(store, t) {
-                Ok(beyond) -> !beyond.dark
+          let allowed = case back {
+            Some(b) -> direction == b
+            None ->
+              case types.find_exit(from, direction) {
+                Ok(e) -> room.leads_to_light(store, e)
                 Error(Nil) -> False
               }
-            _ -> False
           }
-          case lit {
+          case allowed {
             True -> Ok(Nil)
             False ->
               Error(
-                "It's too dark to find your way. You can only feel your way back toward somewhere lit.",
+                "It's too dark to find your way. All you can find is the way you came.",
               )
           }
         }
