@@ -523,7 +523,7 @@ fn prompt(
       <> required
       |> list.map(fn(r) { r.name <> " (" <> r.looks <> ")" })
       |> string.join("; ")
-      <> ". Mention each by its exact name in the description. Don't list them in \"items\"; they are added for you."
+      <> ". Mention each by its exact name in the description; they are added for you."
   }
   let lock = case want_lock {
     False -> ""
@@ -558,10 +558,9 @@ fn prompt(
   <> "{\"name\": \"2-5 word place name\", "
   <> "\"description\": \"2-4 sentences, second person present tense\", "
   <> "\"picture\": \"one plain sentence, under 25 words, describing what a painting of this place shows (the place itself, its light and its main features); nothing that isn't in the description\", "
-  <> "\"features\": [\"3-5 short visual details, including any ordinary objects here\"], "
-  <> "\"items\": [{\"name\": \"short name, 1-4 words\", \"looks\": \"what it plainly looks like, 4-10 words\"}] (0 or 1 small valuable worth keeping: coins, a ring, a locket, a silver trinket; ordinary objects belong in features, not items), "
+  <> "\"features\": [\"3-5 short visual details, including any objects here\"], "
   <> "\"exits\": [{\"direction\": \"north|south|east|west|up|down\", \"hint\": \"short phrase: what you see of that way out\"}]}"
-  <> "\nThe description must mention every item by its exact name, and every visual detail, and should hint at each way out without listing directions."
+  <> "\nThe description must mention every visual detail, and should hint at each way out without listing directions."
   <> " A way down must look like a way down (stairs, a ladder, a grate, a hatch, a hole) and a way up like a way up."
   <> case want_lock {
     True -> ""
@@ -925,15 +924,16 @@ fn parse(text: String, back: Direction) -> Result(Proposal, String) {
     name:,
     description:,
     picture: clean(p.picture, 400),
-    features: p.features
+    // Only items with a role the game uses can be picked up, and the model
+    // doesn't hand those out (the engine places keys). Anything it offers as
+    // an item is scenery: kept as a visual detail.
+    features: list.append(p.features, p.items)
       |> list.map(clean(_, 120))
       |> list.filter(non_empty)
+      |> list.unique
       |> list.take(6),
-    items: p.items
-      |> list.map(item_name)
-      |> list.filter(non_empty)
-      |> list.take(2),
-    looks: list.map(p.looks, fn(l) { #(item_name(l.0), clean(l.1, 80)) }),
+    items: [],
+    looks: [],
     exits:,
     lock: option.map(p.lock, fn(l) {
       LockPlan(

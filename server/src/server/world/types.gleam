@@ -79,6 +79,11 @@ pub type Direction {
 
 pub const all_directions = [North, South, East, West, Up, Down]
 
+/// Roles an item can have that the game actually does something with. Only
+/// these can be picked up (and examined); add one as its mechanic is built.
+/// Older items without one of these are scenery.
+pub const takeable_roles = ["key"]
+
 pub fn direction_name(d: Direction) -> String {
   case d {
     North -> "north"

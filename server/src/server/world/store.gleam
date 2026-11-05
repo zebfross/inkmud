@@ -523,7 +523,9 @@ pub fn neighbour_names(store: Store, room_id: Int) -> List(String) {
 
 pub fn room_items(store: Store, room_id: Int) -> List(String) {
   sqlight.query(
-    "select name from items where room_id = ? order by id",
+    "select name from items where room_id = ? and "
+      <> takeable()
+      <> " order by id",
     store,
     [sqlight.int(room_id)],
     decode.field(0, decode.string, decode.success),
@@ -550,7 +552,7 @@ pub fn take_item(
 ) -> Result(String, Nil) {
   move_item(
     store,
-    "select id, name from items where room_id = ?",
+    "select id, name from items where room_id = ? and " <> takeable(),
     [sqlight.int(room_id)],
     query,
     "update items set room_id = null, holder = ? where id = ?",
@@ -813,7 +815,9 @@ pub fn examinable_items(
     )
   }
   sqlight.query(
-    "select id, name, looks from items where room_id = ? or holder = ? order by holder is null desc, id",
+    "select id, name, looks from items where (room_id = ? or holder = ?) and "
+      <> takeable()
+      <> " order by holder is null desc, id",
     store,
     [sqlight.int(room_id), sqlight.text(player)],
     row,
@@ -1021,4 +1025,14 @@ pub fn clear_pending(store: Store, cell: types.Cell) -> Nil {
       decode.success(Nil),
     )
   Nil
+}
+
+/// SQL condition: the item has a role the game uses (see
+/// `types.takeable_roles`). Only those are shown, taken or examined.
+fn takeable() -> String {
+  "role in ("
+  <> types.takeable_roles
+  |> list.map(fn(r) { "'" <> r <> "'" })
+  |> string.join(", ")
+  <> ")"
 }

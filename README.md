@@ -61,8 +61,9 @@ browser (Lustre) ──websocket──▶ Gleam server
   up while its old connection lingers, a second tab) takes over and the old
   connection is told to stand down; another browser using a name in play is
   refused.
-- **Items have a job.** Only keys and valuables can be picked up; anything
-  else the builder invents is scenery (examinable, not takeable). Some new
+- **Items have a job.** Only items whose role the game implements can be
+  picked up or examined (`types.takeable_roles`: just keys for now). The
+  builder doesn't invent items; objects it mentions are scenery. Some new
   rooms get a locked way out; its key is promised to an unbuilt place
   reachable without that lock (beyond another of the room's ways out, or
   the previous room's), and whichever way that place is built, it contains
@@ -84,9 +85,9 @@ browser (Lustre) ──websocket──▶ Gleam server
   the fixed set (`go`, `look`, `examine`, `take`, `drop`, `inventory`, `say`,
   `help`), or refused. Typed commands skip the model entirely.
 - **Art prompts come from stored room facts, never player text.** A room's
-  picture is an establishing shot of the place. Examining an item, something
-  you carry or a visible detail draws a close-up of just that thing (from the
-  item's plain physical "look"), shown in the story and kept for next time.
+  picture is an establishing shot of the place. Examining something you could
+  pick up (or carry) draws a close-up of just that thing (from the item's
+  plain physical "look"), shown in the story and kept for next time.
 
 ## Configuration
 

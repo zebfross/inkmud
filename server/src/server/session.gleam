@@ -350,13 +350,25 @@ fn run(session: Session, cmd: Command, interpreted: Bool, conn) -> Session {
       let self = session.self
       let deps = session.deps
       background(session, fn(room_data, inventory) {
-        process.send(self, Out(examine(deps.fast, room_data, inventory, thing)))
+        // Only things you could pick up (or carry) are worth a closer look.
         case find_examinable(deps.store, room_data, name, thing) {
-          Some(found) ->
+          Some(found) -> {
+            process.send(
+              self,
+              Out(examine(deps.fast, room_data, inventory, found.name)),
+            )
             art.closeup(deps.art, deps.store, room_data, found, fn(url) {
               process.send(self, Out(protocol.Closeup(found.name, url)))
             })
-          None -> Nil
+          }
+          None ->
+            process.send(
+              self,
+              Out(Line(
+                System,
+                "There's nothing more to see there. (You can examine things you could pick up.)",
+              )),
+            )
         }
         Quiet
       })
@@ -611,24 +623,16 @@ fn map_view(deps: Deps, name: String, current: Int) -> protocol.MapView {
 // CLOSE-UPS -------------------------------------------------------------------
 
 /// What "examine <thing>" refers to, if it's really here: an item in the
-/// room or carried, or one of the room's visual details. Matched by exact
-/// name, or by every word asked for appearing in its name.
+/// room or one carried. Matched by exact name, or by every word asked for
+/// appearing in its name.
 fn find_examinable(
   store: Store,
   room_data: Room,
   player: String,
   query: String,
 ) -> Option(store.Examinable) {
-  let details =
-    list.index_map(room_data.features, fn(feature, i) {
-      store.Examinable(
-        key: "detail-" <> int.to_string(room_data.id) <> "-" <> int.to_string(i),
-        name: feature,
-        looks: feature,
-      )
-    })
-  let candidates =
-    list.append(store.examinable_items(store, room_data.id, player), details)
+  // Only things you could pick up (or carry): not the room's scenery.
+  let candidates = store.examinable_items(store, room_data.id, player)
   let q =
     query
     |> string.lowercase

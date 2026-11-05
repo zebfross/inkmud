@@ -291,15 +291,26 @@ pub fn lock_and_key_test() {
   // No key: barred, with what bars the way.
   assert store.pass(db, "Ada", start, East)
     == store.Barred("an iron gate with a raven keyhole")
-  // Make the oil tin the key (for the test), and carry it.
-  store.set_item_role(db, start, "tin of lamp oil", "key", Some("lock-test"))
-  let assert Ok(_) = store.take_item(db, start, "Ada", "tin of lamp oil")
+  // A key lying in the next room, made for this lock; carry it.
+  let assert Ok(quay) =
+    store.insert_room(
+      db,
+      "drowned_quarter",
+      "Quay",
+      "A quay.",
+      [],
+      ["raven key"],
+      [],
+      #(1, 0, 0),
+    )
+  store.set_item_role(db, quay, "raven key", "key", Some("lock-test"))
+  let assert Ok(_) = store.take_item(db, quay, "Ada", "raven key")
   // Someone else without it is still barred.
   assert store.pass(db, "Bram", start, East)
     == store.Barred("an iron gate with a raven keyhole")
   // With it: unlocked, key left in the lock, and open for good — for anyone.
   assert store.pass(db, "Ada", start, East)
-    == store.Unlocked("tin of lamp oil", "an iron gate with a raven keyhole")
+    == store.Unlocked("raven key", "an iron gate with a raven keyhole")
   assert store.inventory(db, "Ada") == []
   assert store.pass(db, "Bram", start, East) == store.Open
   // Other exits were never locked.
@@ -350,4 +361,28 @@ pub fn barred_test() {
     == "An iron gate with a raven keyhole bars the way. It's locked."
   assert types.barred("A sturdy gate bars the way.")
     == "A sturdy gate bars the way. It's locked."
+}
+
+pub fn only_takeable_roles_test() {
+  let db = store.open(":memory:")
+  let _ = seed.run(db)
+  // Items without a role the game uses are scenery: not shown, not taken.
+  let assert Ok(room) =
+    store.insert_room(
+      db,
+      "warrens",
+      "Den",
+      "A den.",
+      [],
+      ["old spoon", "brass key"],
+      [],
+      #(0, 0, -1),
+    )
+  store.set_item_role(db, room, "old spoon", "valuable", None)
+  store.set_item_role(db, room, "brass key", "key", Some("lock-x"))
+  assert store.room_items(db, room) == ["brass key"]
+  assert store.take_item(db, room, "Ada", "old spoon") == Error(Nil)
+  assert store.take_item(db, room, "Ada", "brass key") == Ok("brass key")
+  // The seed room's pole and oil tin are scenery now.
+  assert store.room_items(db, 1) == []
 }

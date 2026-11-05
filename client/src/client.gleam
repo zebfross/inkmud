@@ -707,19 +707,6 @@ fn view_actions(model: Model) -> Element(Msg) {
           }),
         ),
         group(
-          "Look closer",
-          list.map(room.features, fn(f) {
-            html.button(
-              [
-                class("chip detail"),
-                attribute.title("Examine " <> f),
-                event.on_click(Run("examine " <> f)),
-              ],
-              [html.span([class("lens")], [text("◉")]), text(short(f, 28))],
-            )
-          }),
-        ),
-        group(
           "Also here",
           list.map(room.others, fn(p) {
             html.span([class("person")], [text(p)])
@@ -899,14 +886,6 @@ fn thing_chip(name: String, verb: String, command: String) -> Element(Msg) {
       [text(verb)],
     ),
   ])
-}
-
-/// A long visual detail cut down for a chip ("towering cast-iron gas…").
-fn short(text: String, max: Int) -> String {
-  case string.length(text) > max {
-    True -> string.trim(string.slice(text, 0, max - 1)) <> "…"
-    False -> text
-  }
 }
 
 fn view_log_entries(entries: List(Entry)) -> Element(Msg) {

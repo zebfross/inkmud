@@ -64,8 +64,11 @@ pub fn run(store: Store) -> Int {
         "fog pooling on cobblestones",
         "an abandoned lamplighter's ladder",
         "four cobbled streets meeting in a small square, shuttered shopfronts",
+        // Scenery for now; the oil tin can come back as fuel for a light.
+        "a lamplighter's hooked pole",
+        "a tin of lamp oil",
       ],
-      ["lamplighter's hooked pole", "tin of lamp oil"],
+      [],
       [
         NewExit(
           North,
@@ -99,18 +102,6 @@ pub fn run(store: Store) -> Int {
     store,
     start,
     "A foggy square where four cobbled streets meet beneath a towering cast-iron gas lamp with amber glass, a ladder leaning on it, shuttered shopfronts all around.",
-  )
-  store.set_item_look(
-    store,
-    start,
-    "lamplighter's hooked pole",
-    "a long wooden pole with an iron hook at its tip",
-  )
-  store.set_item_look(
-    store,
-    start,
-    "tin of lamp oil",
-    "a small dented tin can of oil with a cork stopper",
   )
   store.save_build_debug(
     store,
