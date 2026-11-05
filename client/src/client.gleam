@@ -702,7 +702,6 @@ fn view_game(model: Model) -> Element(Msg) {
         ])
       Some(room) ->
         html.main([class("board")], [
-          view_location(model, room),
           html.div([class("columns")], [
             html.div([class("main-col")], [
               view_scene(room),
@@ -814,19 +813,6 @@ fn view_lantern_gauge(model: Model) -> Element(Msg) {
   }
 }
 
-fn view_location(_model: Model, room: RoomView) -> Element(Msg) {
-  html.section([class("card location")], [
-    html.span([class("location-icon")], [
-      icon(case room.dark {
-        True -> "dark_mode"
-        False -> "foggy"
-      }),
-    ]),
-    html.h1([class("location-name")], [text(room.name)]),
-    html.span([class("badge")], [text(room.region)]),
-  ])
-}
-
 /// The picture, with the ways out labelled where they lead: north at the
 /// top, east at the right, and so on. A label goes that way.
 fn view_scene(room: RoomView) -> Element(Msg) {
@@ -834,11 +820,21 @@ fn view_scene(room: RoomView) -> Element(Msg) {
     html.div([class("scene-frame")], [
       case room.dark, room.art {
         True, _ -> html.div([class("scene-picture dark")], [text("pitch dark")])
+        // The whole (square) picture, with a blurred copy filling the frame.
         False, Some(url) ->
-          html.img([
-            attribute.src(url),
-            attribute.alt(room.name),
-            class("scene-picture"),
+          element.fragment([
+            html.div(
+              [
+                class("scene-backdrop"),
+                attribute.styles([#("background-image", "url(" <> url <> ")")]),
+              ],
+              [],
+            ),
+            html.img([
+              attribute.src(url),
+              attribute.alt(room.name),
+              class("scene-picture"),
+            ]),
           ])
         False, None ->
           html.div([class("scene-picture pending")], [
