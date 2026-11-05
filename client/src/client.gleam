@@ -612,6 +612,11 @@ fn view_game(model: Model) -> Element(Msg) {
         html.p([class("glimpse-float")], [
           html.span([class("glimpse-dir")], [text(e.direction)]),
           text(e.hint),
+          case e.lock {
+            Some(lock) ->
+              html.span([class("glimpse-lock")], [text(" · locked: " <> lock)])
+            None -> element.none()
+          },
         ])
       None -> element.none()
     },
@@ -816,6 +821,10 @@ fn view_exits(
               [
                 html.span([class("arrow")], [text(arrow(e.direction))]),
                 text(e.direction),
+                case e.lock {
+                  Some(_) -> html.span([class("lock")], [text(" 🔒")])
+                  None -> element.none()
+                },
               ],
             )
           }),
@@ -825,6 +834,13 @@ fn view_exits(
             html.p([class("glimpse")], [
               html.span([class("glimpse-dir")], [text(e.direction)]),
               text(e.hint),
+              case e.lock {
+                Some(lock) ->
+                  html.span([class("glimpse-lock")], [
+                    text(" · locked: " <> lock),
+                  ])
+                None -> element.none()
+              },
             ])
           None ->
             html.p([class("glimpse idle")], [

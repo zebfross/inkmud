@@ -72,7 +72,8 @@ pub fn decode_client(text: String) -> Result(ClientMsg, Nil) {
 // SERVER → CLIENT -------------------------------------------------------------
 
 pub type ExitView {
-  ExitView(direction: String, hint: String)
+  /// `lock`: what bars it, if it's locked.
+  ExitView(direction: String, hint: String, lock: Option(String))
 }
 
 pub type RoomView {
@@ -278,6 +279,7 @@ fn room_json(view: RoomView) -> Json {
         json.object([
           #("direction", json.string(e.direction)),
           #("hint", json.string(e.hint)),
+          #("lock", json.nullable(e.lock, json.string)),
         ])
       }),
     ),
@@ -309,7 +311,12 @@ fn room_decoder() -> Decoder(RoomView) {
   let exit = {
     use direction <- decode.field("direction", decode.string)
     use hint <- decode.field("hint", decode.string)
-    decode.success(ExitView(direction:, hint:))
+    use lock <- decode.optional_field(
+      "lock",
+      None,
+      decode.optional(decode.string),
+    )
+    decode.success(ExitView(direction:, hint:, lock:))
   }
   use id <- decode.field("id", decode.int)
   use region <- decode.field("region", decode.string)

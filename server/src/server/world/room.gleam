@@ -272,10 +272,14 @@ pub fn look_toward(exits: List(types.Exit), d: Direction) -> String {
         _ -> "To the " <> types.direction_name(d) <> ", "
       }
       let hint = string.trim(exit.hint)
-      case string.starts_with(hint, "back toward ") {
+      let seen = case string.starts_with(hint, "back toward ") {
         True ->
           lead <> "the way leads back to " <> string.drop_start(hint, 12) <> "."
         False -> lead <> lowercase_first(hint) <> end_stop(hint)
+      }
+      case exit.lock {
+        Some(lock) -> seen <> " " <> types.barred(lock)
+        None -> seen
       }
     }
   }
@@ -321,7 +325,7 @@ fn view(state: State, for: String) -> protocol.RoomView {
     name: room.name,
     description: room.description,
     exits: list.map(room.exits, fn(e) {
-      ExitView(types.direction_name(e.direction), e.hint)
+      ExitView(types.direction_name(e.direction), e.hint, e.lock)
     }),
     items: room.items,
     features: room.features,

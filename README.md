@@ -61,6 +61,14 @@ browser (Lustre) ──websocket──▶ Gleam server
   up while its old connection lingers, a second tab) takes over and the old
   connection is told to stand down; another browser using a name in play is
   refused.
+- **Items have a job.** Only keys and valuables can be picked up; anything
+  else the builder invents is scenery (examinable, not takeable). Some new
+  rooms get a locked way out; its key is promised to an unbuilt place
+  reachable without that lock (beyond another of the room's ways out, or
+  the previous room's), and whichever way that place is built, it contains
+  the key. A key opens its lock for everyone and stays in it.
+- **Levels mean something.** Below street level is always underground
+  (sewers, tunnels, cellars, crypts); above is rooftops, towers, bridges.
 - **Your map** (the Map button) shows the rooms you've visited at their grid
   positions, each floor a tilted plane stacked above the one below.
 - **Engine owns the truth.** The model proposes rooms in a fixed JSON shape;

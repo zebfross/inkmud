@@ -34,6 +34,8 @@ pub type Arrival {
   Building
   Arrived(room_id: Int)
   Blocked(reason: String)
+  /// The player's key opened a lock on the way (more replies follow).
+  Opened(text: String)
 }
 
 type Key =
@@ -41,7 +43,12 @@ type Key =
 
 pub type Message {
   GetRoom(id: Int, reply: Subject(Result(Subject(room.Message), Nil)))
-  Traverse(room_id: Int, direction: Direction, reply: fn(Arrival) -> Nil)
+  Traverse(
+    player: String,
+    room_id: Int,
+    direction: Direction,
+    reply: fn(Arrival) -> Nil,
+  )
   Prefetch(room_id: Int)
   Built(key: Key, result: Result(builder.Built, Nil))
   /// `on_reset` is how a dev reset tells this player's session to start over
@@ -213,40 +220,26 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       )
     }
 
-    Traverse(room_id, direction, reply) ->
-      case store.load_room(state.store, room_id) {
-        Error(Nil) -> {
-          reply(Blocked("You can't go that way."))
+    Traverse(player, room_id, direction, reply) ->
+      case store.pass(state.store, player, room_id, direction) {
+        store.Barred(lock) -> {
+          reply(Blocked(types.barred(lock)))
           actor.continue(state)
         }
-        Ok(from) ->
-          case types.find_exit(from, direction) {
-            Error(Nil) -> {
-              reply(Blocked("You can't go that way."))
-              actor.continue(state)
-            }
-            Ok(types.Exit(target: Some(id), ..)) -> {
-              reply(Arrived(id))
-              actor.continue(state)
-            }
-            Ok(types.Exit(target: None, ..)) -> {
-              reply(Building)
-              let key = #(room_id, direction)
-              let waiters = dict.get(state.waiting, key) |> result.unwrap([])
-              let queue = case is_active(state, key) {
-                True -> state.queue
-                // Someone is waiting: to the front of the queue.
-                False -> [key, ..list.filter(state.queue, fn(k) { k != key })]
-              }
-              State(
-                ..state,
-                waiting: dict.insert(state.waiting, key, [reply, ..waiters]),
-                queue:,
-              )
-              |> run_next
-              |> actor.continue
-            }
+        store.Unlocked(key:, ..) -> {
+          reply(Opened(
+            "You fit the "
+            <> key
+            <> " into the lock. It turns with a heavy click and the way opens; you leave the key where it is.",
+          ))
+          // The exit changed for everyone: its room shows it open.
+          case dict.get(state.rooms, room_id) {
+            Ok(r) -> process.send(r, room.Refresh)
+            Error(Nil) -> Nil
           }
+          traverse(state, room_id, direction, reply)
+        }
+        store.Open -> traverse(state, room_id, direction, reply)
       }
 
     Prefetch(room_id) ->
@@ -308,6 +301,50 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       |> run_next
       |> actor.continue
     }
+  }
+}
+
+/// Go through an exit (already past any lock): to the room beyond, or wait
+/// while it's built.
+fn traverse(
+  state: State,
+  room_id: Int,
+  direction: Direction,
+  reply: fn(Arrival) -> Nil,
+) -> actor.Next(State, Message) {
+  case store.load_room(state.store, room_id) {
+    Error(Nil) -> {
+      reply(Blocked("You can't go that way."))
+      actor.continue(state)
+    }
+    Ok(from) ->
+      case types.find_exit(from, direction) {
+        Error(Nil) -> {
+          reply(Blocked("You can't go that way."))
+          actor.continue(state)
+        }
+        Ok(types.Exit(target: Some(id), ..)) -> {
+          reply(Arrived(id))
+          actor.continue(state)
+        }
+        Ok(types.Exit(target: None, ..)) -> {
+          reply(Building)
+          let key = #(room_id, direction)
+          let waiters = dict.get(state.waiting, key) |> result.unwrap([])
+          let queue = case is_active(state, key) {
+            True -> state.queue
+            // Someone is waiting: to the front of the queue.
+            False -> [key, ..list.filter(state.queue, fn(k) { k != key })]
+          }
+          State(
+            ..state,
+            waiting: dict.insert(state.waiting, key, [reply, ..waiters]),
+            queue:,
+          )
+          |> run_next
+          |> actor.continue
+        }
+      }
   }
 }
 

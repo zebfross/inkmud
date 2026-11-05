@@ -303,7 +303,7 @@ fn run(session: Session, cmd: Command, interpreted: Bool, conn) -> Session {
           let self = session.self
           process.send(
             session.deps.world,
-            world.Traverse(session.room_id, d, fn(a) {
+            world.Traverse(name, session.room_id, d, fn(a) {
               process.send(self, Moved(d, a))
             }),
           )
@@ -419,6 +419,18 @@ fn on_event(session: Session, event: Event, conn) -> Session {
           <> types.direction_name(d)
           <> " takes shape…",
         ),
+      )
+      session
+    }
+    // A key opened a lock on the way; the move carries on.
+    Moved(_, world.Opened(text)) -> {
+      send(conn, Line(Narration, text))
+      send(
+        conn,
+        protocol.Inventory(store.inventory(
+          session.deps.store,
+          option.unwrap(session.name, ""),
+        )),
       )
       session
     }

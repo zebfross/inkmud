@@ -3,6 +3,7 @@
 
 import gleam/list
 import gleam/option.{type Option}
+import gleam/string
 
 pub type Region {
   Region(id: String, name: String, theme: String)
@@ -18,6 +19,9 @@ pub type Exit {
     target_region: String,
     /// `None` until someone (or prefetching) goes through.
     target: Option(Int),
+    /// Locked: what bars the way ("an iron gate with a raven-shaped
+    /// keyhole"). Opened for good by the one key made for it.
+    lock: Option(String),
   )
 }
 
@@ -111,4 +115,25 @@ pub fn opposite(d: Direction) -> Direction {
 
 pub fn find_exit(room: Room, d: Direction) -> Result(Exit, Nil) {
   list.find(room.exits, fn(e) { e.direction == d })
+}
+
+/// "An iron gate with a raven keyhole" → "An iron gate with a raven keyhole
+/// bars the way. It's locked."; a description that already says what it
+/// does ("A sturdy gate bars the way") isn't told twice.
+pub fn barred(lock: String) -> String {
+  let lock = string.trim(lock)
+  let lock = case string.ends_with(lock, ".") {
+    True -> string.drop_end(lock, 1)
+    False -> lock
+  }
+  let sentence =
+    string.uppercase(string.slice(lock, 0, 1)) <> string.drop_start(lock, 1)
+  let says_it =
+    list.any(["bar", "block", "seal", "lock"], fn(w) {
+      string.contains(string.lowercase(lock), " " <> w)
+    })
+  case says_it {
+    True -> sentence <> ". It's locked."
+    False -> sentence <> " bars the way. It's locked."
+  }
 }

@@ -115,6 +115,8 @@ button, input { font: inherit; color: inherit; }
   color: var(--ink-soft); font: 12px/1.6 "IBM Plex Mono", monospace;
 }
 .lens { margin-right: .35rem; color: var(--ink-faint); font-size: .8em; }
+.lock { font-size: .8em; }
+.glimpse-lock { color: var(--accent); font-style: normal; }
 .chip.detail { color: var(--ink-soft); }
 .actions { display: flex; flex-direction: column; gap: 1rem; }
 .glimpse {

@@ -11,7 +11,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import logging
@@ -21,6 +21,9 @@ import server/world/store.{type Store, NewExit}
 import server/world/types.{type Direction, type Exit, type Room}
 
 const attempts = 4
+
+/// Percent of new rooms asked to have a locked way out (when they can).
+const lock_chance = 30
 
 type Proposal {
   Proposal(
@@ -35,6 +38,30 @@ type Proposal {
     /// "a small dented tin can of oil" as the thing itself.
     looks: List(#(String, String)),
     exits: List(#(String, String)),
+    /// Asked for when the engine wants a lock here: which new way out is
+    /// locked, what bars it, and the key that opens it.
+    lock: Option(LockPlan),
+  )
+}
+
+pub type LockPlan {
+  LockPlan(exit: String, desc: String, key_name: String, key_looks: String)
+}
+
+/// What a build has to honour besides the model's own ideas.
+type Context {
+  Context(
+    client: Client,
+    prompt: String,
+    back: Direction,
+    taken: List(String),
+    /// The room the player came from: the new one mustn't copy it.
+    from_description: String,
+    /// Items promised to this cell (a key for a nearby lock): the room
+    /// must have them and its description must mention them.
+    required: List(store.Pending),
+    /// Height of the new place: below 0 is underground.
+    level: Int,
   )
 }
 
@@ -108,9 +135,36 @@ fn invent(
         None -> Error(Nil)
       }
     })
-  let prompt = prompt(store, from, exit, region, back, neighbours)
-  let taken = store.room_names(store)
-  let #(proposal, build_log) = propose(client, prompt, back, taken, attempts)
+  // Promised to this cell (a key for a lock nearby), and whether to ask for
+  // a lock here: only if at least two new ways out could lead somewhere new
+  // (one locked, one to the room holding its key), which the model's exits
+  // decide; checked again after it answers.
+  let required = store.pending_at(store, target)
+  let want_lock = int.random(100) < lock_chance
+  let level = target.2
+  let prompt =
+    prompt(
+      store,
+      from,
+      exit,
+      region,
+      back,
+      neighbours,
+      required,
+      want_lock,
+      level,
+    )
+  let ctx =
+    Context(
+      client:,
+      prompt:,
+      back:,
+      taken: store.room_names(store),
+      from_description: from.description,
+      required:,
+      level:,
+    )
+  let #(proposal, build_log) = propose(ctx, attempts)
   // The model can insist on a name through every retry; and two rooms built
   // at the same moment can't see each other's. Re-read and set it apart.
   let proposal =
@@ -171,6 +225,24 @@ fn invent(
       }
     Ok(id) -> {
       store.set_picture(store, id, proposal.picture)
+      // Promised items get their role (a key, and the lock it opens); the
+      // model's own items are valuables (the column's default).
+      list.each(required, fn(r) {
+        store.set_item_role(store, id, r.name, r.role, r.unlocks)
+      })
+      store.clear_pending(store, target)
+      // The model often leaves the lock out when asked: then the engine
+      // picks the way to lock and asks just for what the lock looks like.
+      let proposal = case want_lock, proposal.lock {
+        True, None ->
+          Proposal(
+            ..proposal,
+            lock: invent_lock(client, region, proposal, back, neighbours),
+          )
+        _, _ -> proposal
+      }
+      let lock_note =
+        place_lock(store, id, target, proposal, neighbours, back, from)
       // What each item plainly looks like, for its close-up when examined.
       list.each(proposal.items, fn(item) {
         case list.key_find(proposal.looks, item) {
@@ -178,7 +250,15 @@ fn invent(
           _ -> Nil
         }
       })
-      store.save_build_debug(store, id, prompt, build_log)
+      store.save_build_debug(
+        store,
+        id,
+        prompt,
+        list.append(build_log, case lock_note {
+          "" -> []
+          note -> [store.BuildAttempt(feedback: "", reply: "", problem: note)]
+        }),
+      )
       // Joining last: until these run, nobody can walk into a half-written
       // room. Then the neighbours: an unbuilt exit of theirs pointing here
       // now leads here; one we gave a way out toward gets a way back.
@@ -214,6 +294,204 @@ fn invent(
   }
 }
 
+/// A lock for one of the room's new ways out (the first that doesn't lead
+/// into a built place), described by a small, focused question to the model;
+/// a plain locked door if it doesn't answer usefully. `place_lock` still
+/// checks there's somewhere for the key.
+fn invent_lock(
+  client: Client,
+  region: types.Region,
+  proposal: Proposal,
+  back: Direction,
+  neighbours: List(#(Direction, Room)),
+) -> Option(LockPlan) {
+  let candidate =
+    proposal.exits
+    |> list.filter_map(fn(e) {
+      use d <- result.try(types.parse_direction(e.0))
+      case d != back && result.is_error(list.key_find(neighbours, d)) {
+        True -> Ok(#(d, e.1))
+        False -> Error(Nil)
+      }
+    })
+    |> list.first
+  use #(d, hint) <- option.then(option.from_result(candidate))
+  let ask =
+    seed.setting
+    <> "\n\nA place called \""
+    <> proposal.name
+    <> "\" in "
+    <> region.name
+    <> ". One way out of it ("
+    <> hint
+    <> ") is locked. Describe what bars that way and the key that opens it."
+    <> "\nReply with JSON only: {\"lock\": \"5-12 words: a door, gate, grate, hatch or shutter and how it is locked\", "
+    <> "\"key\": {\"name\": \"2-4 words ending in 'key'\", \"looks\": \"what the key plainly looks like, 4-10 words\"}}"
+  let decoder = {
+    use desc <- decode.field("lock", decode.string)
+    use name <- decode.optional_field(
+      "key",
+      "",
+      decode.optional_field("name", "", decode.string, decode.success),
+    )
+    use looks <- decode.optional_field(
+      "key",
+      "",
+      decode.optional_field("looks", "", decode.string, decode.success),
+    )
+    decode.success(#(desc, name, looks))
+  }
+  let #(desc, name, looks) = case
+    llm.generate(client, llm.Ask(..llm.ask_json(ask), timeout: 30_000))
+  {
+    Ok(text) ->
+      case json.parse(text, decoder) {
+        Ok(#(desc, name, looks)) if desc != "" -> #(desc, name, looks)
+        _ -> #("", "", "")
+      }
+    Error(Nil) -> #("", "", "")
+  }
+  Some(
+    LockPlan(
+      exit: types.direction_name(d),
+      desc: case lock_text(desc) {
+        "" -> "a stout locked door"
+        text -> text
+      },
+      key_name: key_name(name),
+      key_looks: case clean(looks, 80) {
+        "" -> "a heavy old iron key"
+        text -> text
+      },
+    ),
+  )
+}
+
+/// A lock's description: one clause, at most 14 words, never cut mid-word.
+fn lock_text(text: String) -> String {
+  first_sentence(clean(text, 300), 14)
+}
+
+/// Lock the way out the model chose, and promise its key to an unbuilt
+/// place reachable without passing the lock, so the puzzle can always be
+/// solved: beyond another of this room's new ways out, or failing that,
+/// beyond one of the previous room's unexplored ways out. Both the locked
+/// cell and the key's cell must be unbuilt — a key can't be added to a room
+/// whose text is already written. Returns a note for the developer view
+/// ("" if there's no lock).
+fn place_lock(
+  store: Store,
+  room_id: Int,
+  cell: types.Cell,
+  proposal: Proposal,
+  neighbours: List(#(Direction, Room)),
+  back: Direction,
+  from: Room,
+) -> String {
+  let open_exits =
+    proposal.exits
+    |> list.filter_map(fn(e) { types.parse_direction(e.0) })
+    |> list.filter(fn(d) {
+      d != back
+      && result.is_error(list.key_find(neighbours, d))
+      && store.room_at(store, types.step(cell, d)) == None
+    })
+  case proposal.lock {
+    None -> ""
+    Some(plan) ->
+      case types.parse_direction(string.lowercase(string.trim(plan.exit))) {
+        Error(Nil) -> "lock dropped: \"" <> plan.exit <> "\" isn't a direction"
+        Ok(locked) -> {
+          let locked_cell = types.step(cell, locked)
+          let here =
+            open_exits
+            |> list.filter(fn(d) { d != locked })
+            |> list.map(fn(d) {
+              #(
+                types.step(cell, d),
+                "beyond this room's way " <> types.direction_name(d),
+              )
+            })
+          let behind =
+            from.exits
+            |> list.filter(fn(e) { e.target == None && e.lock == None })
+            |> list.map(fn(e) {
+              #(
+                types.step(types.cell(from), e.direction),
+                "beyond "
+                  <> from.name
+                  <> "'s way "
+                  <> types.direction_name(e.direction),
+              )
+            })
+            |> list.filter(fn(c) {
+              c.0 != cell
+              && c.0 != locked_cell
+              && store.room_at(store, c.0) == None
+            })
+          case list.contains(open_exits, locked), list.append(here, behind) {
+            True, [#(key_cell, where), ..] -> {
+              let lock_id =
+                "lock-"
+                <> int.to_string(room_id)
+                <> "-"
+                <> types.direction_name(locked)
+              store.lock_exit(store, room_id, locked, lock_id, plan.desc)
+              store.add_pending(
+                store,
+                key_cell,
+                store.Pending(
+                  name: plan.key_name,
+                  looks: plan.key_looks,
+                  role: "key",
+                  unlocks: Some(lock_id),
+                ),
+              )
+              "used: locked the way "
+              <> types.direction_name(locked)
+              <> " ("
+              <> plan.desc
+              <> "); its key, "
+              <> plan.key_name
+              <> ", is promised to the room "
+              <> where
+            }
+            _, _ ->
+              "lock dropped: the locked way must lead somewhere unbuilt, and there must be another unbuilt place, reachable without it, for the key"
+          }
+        }
+      }
+  }
+}
+
+/// What a place at this height has to be. Going down from the streets
+/// leads underground, never to another street; going up leads above them.
+fn level_rule(level: Int) -> String {
+  case level {
+    0 -> "This place is at street level."
+    _ if level < 0 ->
+      "This place is "
+      <> int.to_string(-level)
+      <> " level(s) below the streets: it must be underground — a sewer, tunnel, cellar, crypt, cistern or cavern. No sky, no streets, no alleys, no shopfronts."
+    _ ->
+      "This place is "
+      <> int.to_string(level)
+      <> " level(s) above the streets: rooftops, an upper floor, a bell tower, a bridge or a high walkway, looking down on the city."
+  }
+}
+
+/// An underground place that describes streets or sky: not underground.
+pub fn above_ground_words(description: String, level: Int) -> List(String) {
+  case level < 0 {
+    False -> []
+    True -> {
+      let text = string.lowercase(description)
+      ["street", "alley", "sky", "rooftop", "shopfront", "storefront"]
+      |> list.filter(string.contains(text, _))
+    }
+  }
+}
+
 fn prompt(
   store: Store,
   from: Room,
@@ -221,6 +499,9 @@ fn prompt(
   region: types.Region,
   back: Direction,
   neighbours: List(#(Direction, Room)),
+  required: List(store.Pending),
+  want_lock: Bool,
+  level: Int,
 ) -> String {
   let used = case list.take(list.reverse(store.room_names(store)), 40) {
     [] -> "none yet"
@@ -235,16 +516,33 @@ fn prompt(
       |> string.join("; ")
       <> "."
   }
+  let must_contain = case required {
+    [] -> ""
+    _ ->
+      "\nThis place must contain: "
+      <> required
+      |> list.map(fn(r) { r.name <> " (" <> r.looks <> ")" })
+      |> string.join("; ")
+      <> ". Mention each by its exact name in the description. Don't list them in \"items\"; they are added for you."
+  }
+  let lock = case want_lock {
+    False -> ""
+    True ->
+      "\nGive 2 or 3 exits, and make exactly one of them (not the way back) locked: add "
+      <> "\"lock\": {\"exit\": \"its direction\", \"lock\": \"what bars that way, 5-12 words, in your own words and fitting this place: a door, gate, grate, hatch or shutter, and how it is locked\", "
+      <> "\"key\": {\"name\": \"the key that opens it: 2-4 words ending in 'key'\", \"looks\": \"what the key plainly looks like, 4-10 words\"}} at the top level of the JSON, next to \"exits\". "
+      <> "The key is not here; it lies somewhere nearby. Mention the lock in the description."
+  }
   seed.setting
   <> "\n\nRegion: "
   <> region.name
   <> " — "
   <> region.theme
-  <> "\n\nThe player is in \""
+  // Only the previous place's name, not its description: shown that, a 3B
+  // model often copied it (items and all) into the new room.
+  <> "\n\nThe player leaves \""
   <> from.name
-  <> "\": "
-  <> from.description
-  <> "\nThey go "
+  <> "\" going "
   <> types.direction_name(exit.direction)
   <> ". Before going, they saw: \""
   <> exit.hint
@@ -252,18 +550,27 @@ fn prompt(
   <> used
   <> "."
   <> around
-  <> "\n\nInvent the place they arrive in. It must match what they saw and fit the region."
+  <> "\n"
+  <> level_rule(level)
+  <> must_contain
+  <> "\n\nInvent the new place they arrive in, in your own words. It must match what they saw and fit the region."
   <> "\nReply with JSON only, in exactly this shape:\n"
   <> "{\"name\": \"2-5 word place name\", "
   <> "\"description\": \"2-4 sentences, second person present tense\", "
   <> "\"picture\": \"one plain sentence, under 25 words, describing what a painting of this place shows (the place itself, its light and its main features); nothing that isn't in the description\", "
-  <> "\"features\": [\"3-5 short visual details\"], "
-  <> "\"items\": [{\"name\": \"short name of 1-4 words, such as 'brass key'\", \"looks\": \"what it plainly looks like, 4-10 words, such as 'a small tarnished brass key'\"}] (0-2 small portable objects lying here), "
+  <> "\"features\": [\"3-5 short visual details, including any ordinary objects here\"], "
+  <> "\"items\": [{\"name\": \"short name, 1-4 words\", \"looks\": \"what it plainly looks like, 4-10 words\"}] (0 or 1 small valuable worth keeping: coins, a ring, a locket, a silver trinket; ordinary objects belong in features, not items), "
   <> "\"exits\": [{\"direction\": \"north|south|east|west|up|down\", \"hint\": \"short phrase: what you see of that way out\"}]}"
   <> "\nThe description must mention every item by its exact name, and every visual detail, and should hint at each way out without listing directions."
-  <> "\nGive 1 to 3 exits. Do not use the direction \""
+  <> " A way down must look like a way down (stairs, a ladder, a grate, a hatch, a hole) and a way up like a way up."
+  <> case want_lock {
+    True -> ""
+    False -> "\nGive 1 to 3 exits."
+  }
+  <> " Do not use the direction \""
   <> types.direction_name(back)
   <> "\" — that is the way back."
+  <> lock
 }
 
 /// Ask for a room, check it, and ask again on failure. A retry tells the
@@ -271,34 +578,22 @@ fn prompt(
 /// give the identical answer (one proposed the same taken name nine times).
 /// The proposal used, and every reply along the way (for the developer
 /// view of how the room was made).
-fn propose(
-  client: Client,
-  prompt: String,
-  back: Direction,
-  taken: List(String),
-  left: Int,
-) -> #(Proposal, List(store.BuildAttempt)) {
-  let #(proposal, log) = attempt(client, prompt, "", back, taken, left, [])
+fn propose(ctx: Context, left: Int) -> #(Proposal, List(store.BuildAttempt)) {
+  let #(proposal, log) = attempt(ctx, "", left, [])
   #(proposal, list.reverse(log))
 }
 
 fn attempt(
-  client: Client,
-  prompt: String,
+  ctx: Context,
   feedback: String,
-  back: Direction,
-  taken: List(String),
   left: Int,
   log: List(store.BuildAttempt),
 ) -> #(Proposal, List(store.BuildAttempt)) {
   let retry = fn(reply: String, problem: String) {
     logging.log(logging.Info, "room proposal rejected: " <> problem)
     attempt(
-      client,
-      prompt,
+      ctx,
       "\n\nYour previous answer was rejected: " <> problem <> ". Fix that.",
-      back,
-      taken,
       left - 1,
       [store.BuildAttempt(feedback:, reply:, problem:), ..log],
     )
@@ -309,7 +604,8 @@ fn attempt(
         logging.Warning,
         "room builder gave up; writing fallback room",
       )
-      #(fallback(), [
+      let fallback = fallback()
+      #(with_required(fallback, ctx.required), [
         store.BuildAttempt(
           feedback: "",
           reply: "",
@@ -319,37 +615,66 @@ fn attempt(
       ])
     }
     _ ->
-      case llm.generate(client, llm.ask_json(prompt <> feedback)) {
+      case llm.generate(ctx.client, llm.ask_json(ctx.prompt <> feedback)) {
         Ok(text) ->
-          case parse(text, back) {
+          case parse(text, ctx.back) {
             Ok(proposal) -> {
               let duplicate =
-                list.contains(taken, string.lowercase(proposal.name))
+                list.contains(ctx.taken, string.lowercase(proposal.name))
+              let copied = repeats(proposal.description, ctx.from_description)
+              let surfaced = above_ground_words(proposal.description, ctx.level)
               let missing =
                 list.filter(proposal.items, fn(i) {
                   !mentions(proposal.description, i)
                 })
-              case duplicate, missing {
+              let unmentioned =
+                list.filter(ctx.required, fn(r) {
+                  !mentions(proposal.description, r.name)
+                })
+              case duplicate, copied, missing, unmentioned, surfaced {
                 // One retry for a taken name: the model tends to repeat it
                 // however it's told, and `unique_name` can set it apart.
-                True, _ if left == attempts ->
+                True, _, _, _, _ if left == attempts ->
                   retry(
                     text,
                     "\""
                       <> proposal.name
                       <> "\" is already a place in the city; choose a different name",
                   )
-                _, [_, ..] if left > 1 ->
+                _, True, _, _, _ if left > 1 ->
+                  retry(
+                    text,
+                    "the description repeats the previous place's description; describe this new place in your own words",
+                  )
+                _, _, [_, ..], _, _ if left > 1 ->
                   retry(
                     text,
                     "the description doesn't mention "
                       <> string.join(missing, ", ")
                       <> " by name; mention each item in the description, or drop it",
                   )
+                _, _, _, [_, ..], _ if left > 1 ->
+                  retry(
+                    text,
+                    "this place must contain "
+                      <> string.join(
+                      list.map(unmentioned, fn(r) { r.name }),
+                      ", ",
+                    )
+                      <> "; mention each by its exact name in the description",
+                  )
                 // Accept. On the last try, keep only items the description
-                // shows (a name still taken is set apart by `unique_name`).
-                // The picture line is trimmed and the items added by code.
-                _, _ -> {
+                // shows (a name still taken is set apart by `unique_name`),
+                // and make sure promised items are there and mentioned.
+                // The picture line is trimmed to the setting.
+                _, _, _, _, [_, ..] if left > 1 ->
+                  retry(
+                    text,
+                    "this place is underground, below the streets, but the description mentions "
+                      <> string.join(surfaced, ", ")
+                      <> "; describe a tunnel, sewer, cellar, crypt or cavern instead",
+                  )
+                _, _, _, _, _ -> {
                   let items =
                     list.filter(proposal.items, mentions(
                       proposal.description,
@@ -359,7 +684,9 @@ fn attempt(
                     list.filter(proposal.items, fn(i) {
                       !list.contains(items, i)
                     })
-                  let proposal = Proposal(..proposal, items:)
+                  let proposal =
+                    Proposal(..proposal, items:)
+                    |> with_required(ctx.required)
                   let note = case dropped {
                     [] -> ""
                     _ ->
@@ -377,7 +704,7 @@ fn attempt(
           }
         Error(Nil) -> {
           logging.log(logging.Warning, "room builder: no answer from model")
-          attempt(client, prompt, feedback, back, taken, left - 1, [
+          attempt(ctx, feedback, left - 1, [
             store.BuildAttempt(
               feedback:,
               reply: "",
@@ -388,6 +715,72 @@ fn attempt(
         }
       }
   }
+}
+
+/// Promised items are always in the room, and always in its text: any the
+/// description still doesn't mention get a sentence of their own.
+fn with_required(p: Proposal, required: List(store.Pending)) -> Proposal {
+  let names = list.map(required, fn(r) { r.name })
+  let unmentioned =
+    list.filter(required, fn(r) { !mentions(p.description, r.name) })
+  let description = case unmentioned {
+    [] -> p.description
+    _ ->
+      string.trim(p.description)
+      <> " Here you also find "
+      <> string.join(list.map(unmentioned, fn(r) { r.name }), " and ")
+      <> "."
+  }
+  Proposal(
+    ..p,
+    description:,
+    items: list.append(
+      list.filter(p.items, fn(i) { !list.contains(names, i) }),
+      names,
+    ),
+    looks: list.append(
+      p.looks,
+      list.map(required, fn(r) { #(r.name, r.looks) }),
+    ),
+  )
+}
+
+/// A key's name says it's a key: "Raven's Claw" → "raven's claw key"; no
+/// name → "iron key". (The model once offered a "silver flask".)
+pub fn key_name(raw: String) -> String {
+  case item_name(raw) {
+    "" -> "iron key"
+    name ->
+      case string.contains(name, "key") {
+        True -> name
+        False -> name <> " key"
+      }
+  }
+}
+
+/// Does `text` repeat a run of 8 or more words from `source`? (The model,
+/// shown the previous room's description, sometimes just copied it.)
+pub fn repeats(text: String, source: String) -> Bool {
+  let words = fn(s: String) {
+    s
+    |> string.lowercase
+    |> string.to_graphemes
+    |> list.map(fn(g) {
+      case string.contains("abcdefghijklmnopqrstuvwxyz0123456789'", g) {
+        True -> g
+        False -> " "
+      }
+    })
+    |> string.concat
+    |> string.split(" ")
+    |> list.filter(non_empty)
+  }
+  let runs = fn(ws: List(String)) {
+    list.window(ws, 8) |> list.map(string.join(_, " "))
+  }
+  let source_runs = runs(words(source))
+  source_runs != []
+  && list.any(runs(words(text)), list.contains(source_runs, _))
 }
 
 fn parse(text: String, back: Direction) -> Result(Proposal, String) {
@@ -445,6 +838,48 @@ fn parse(text: String, back: Direction) -> Result(Proposal, String) {
       [],
       decode.list(exit) |> decode.map(result.values),
     )
+    // {"exit", "lock", "key": {"name", "looks"}}; anything malformed is no
+    // lock rather than a rejected room.
+    let key = {
+      use name <- decode.optional_field("name", "", decode.string)
+      use looks <- decode.optional_field("looks", "", decode.string)
+      decode.success(#(name, looks))
+    }
+    let lock_plan = {
+      use exit <- decode.field("exit", decode.string)
+      use desc <- decode.field("lock", decode.string)
+      // A lock without a key described still gets one (a plain key).
+      use key <- decode.optional_field(
+        "key",
+        #("", ""),
+        decode.one_of(key, [decode.success(#("", ""))]),
+      )
+      decode.success(
+        Some(LockPlan(exit:, desc:, key_name: key.0, key_looks: key.1)),
+      )
+    }
+    let maybe_lock = decode.one_of(lock_plan, [decode.success(None)])
+    use top_lock <- decode.optional_field("lock", None, maybe_lock)
+    // Sometimes it's put inside the exits list instead: as one of its
+    // entries, or as a "lock" on an exit.
+    use exit_entries <- decode.optional_field(
+      "exits",
+      [],
+      decode.list(
+        decode.one_of(lock_plan, [
+          {
+            use direction <- decode.field("direction", decode.string)
+            use desc <- decode.field("lock", decode.string)
+            decode.success(Some(LockPlan(direction, desc, "", "")))
+          },
+          decode.success(None),
+        ]),
+      ),
+    )
+    let lock = case top_lock {
+      Some(plan) -> Some(plan)
+      None -> exit_entries |> option.values |> list.first |> option.from_result
+    }
     decode.success(Proposal(
       name:,
       description:,
@@ -453,6 +888,7 @@ fn parse(text: String, back: Direction) -> Result(Proposal, String) {
       items: list.map(items, fn(i) { i.0 }),
       looks: items,
       exits:,
+      lock:,
     ))
   }
   use p <- result.try(
@@ -499,6 +935,17 @@ fn parse(text: String, back: Direction) -> Result(Proposal, String) {
       |> list.take(2),
     looks: list.map(p.looks, fn(l) { #(item_name(l.0), clean(l.1, 80)) }),
     exits:,
+    lock: option.map(p.lock, fn(l) {
+      LockPlan(
+        exit: l.exit,
+        desc: lock_text(l.desc),
+        key_name: key_name(l.key_name),
+        key_looks: case clean(l.key_looks, 80) {
+          "" -> "a heavy old iron key"
+          looks -> looks
+        },
+      )
+    }),
   ))
 }
 
@@ -586,8 +1033,8 @@ pub fn mentions(description: String, item: String) -> Bool {
   stem != "" && string.contains(text, stem)
 }
 
-/// "Saltwater's Dark Bend" taken → "Lower Saltwater's Dark Bend", then
-/// "Old …", and so on. `taken` is lowercased.
+/// "Saltwater's Dark Bend" taken → "Old Saltwater's Dark Bend", then
+/// "Little …", and so on. `taken` is lowercased.
 pub fn unique_name(name: String, taken: List(String)) -> String {
   let free = fn(n) { !list.contains(taken, string.lowercase(n)) }
   case free(name) {
@@ -599,7 +1046,8 @@ pub fn unique_name(name: String, taken: List(String)) -> String {
         Ok(#("The", rest)) | Ok(#("A", rest)) | Ok(#("An", rest)) -> rest
         _ -> name
       }
-      ["Lower", "Upper", "Old", "Little", "Far", "Hidden", "Back"]
+      // Not "Upper"/"Lower": rooms have real levels, and those would lie.
+      ["Old", "Little", "Far", "Back", "Hidden", "Narrow", "Inner"]
       |> list.map(fn(prefix) { prefix <> " " <> base })
       |> list.find(free)
       |> result.unwrap(name <> " " <> int.to_string(list.length(taken)))
@@ -658,5 +1106,6 @@ fn fallback() -> Proposal {
     items: [],
     looks: [],
     exits: [],
+    lock: None,
   )
 }

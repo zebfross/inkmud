@@ -78,9 +78,15 @@ pub fn look_toward_parse_test() {
 
 pub fn look_toward_wording_test() {
   let exits = [
-    Exit(North, "worn stone stairs climb toward a broken bell tower", "x", None),
-    Exit(Down, "An iron grate breathes warm air.", "x", None),
-    Exit(West, "back toward The Lantern Crossroads", "x", Some(1)),
+    Exit(
+      North,
+      "worn stone stairs climb toward a broken bell tower",
+      "x",
+      None,
+      None,
+    ),
+    Exit(Down, "An iron grate breathes warm air.", "x", None, None),
+    Exit(West, "back toward The Lantern Crossroads", "x", Some(1), None),
   ]
   assert room.look_toward(exits, North)
     == "To the north, worn stone stairs climb toward a broken bell tower."
@@ -95,14 +101,14 @@ pub fn unique_name_test() {
   assert builder.unique_name("Brick Warren", ["the lantern crossroads"])
     == "Brick Warren"
   assert builder.unique_name("Saltwater's Dark Bend", ["saltwater's dark bend"])
-    == "Lower Saltwater's Dark Bend"
+    == "Old Saltwater's Dark Bend"
   assert builder.unique_name("The Quay", [
       "the quay",
-      "lower quay",
+      "old quay",
     ])
-    == "Upper Quay"
+    == "Little Quay"
   assert builder.unique_name("A Fog-Choked Passage", ["a fog-choked passage"])
-    == "Lower Fog-Choked Passage"
+    == "Old Fog-Choked Passage"
 }
 
 fn room_with(id: Int, exits: List(#(types.Direction, Int))) -> types.Room {
@@ -113,7 +119,7 @@ fn room_with(id: Int, exits: List(#(types.Direction, Int))) -> types.Room {
     description: "",
     features: [],
     items: [],
-    exits: list.map(exits, fn(e) { Exit(e.0, "", "r", Some(e.1)) }),
+    exits: list.map(exits, fn(e) { Exit(e.0, "", "r", Some(e.1), None) }),
     art_url: None,
     picture: "",
     x: 0,
@@ -270,4 +276,78 @@ pub fn first_sentence_test() {
     == "A dimly lit street with a worn stone bellway"
   assert builder.first_sentence("one two three four five", 3) == "one two three"
   assert builder.first_sentence("", 30) == ""
+}
+
+pub fn lock_and_key_test() {
+  let db = store.open(":memory:")
+  let start = seed.run(db)
+  store.lock_exit(
+    db,
+    start,
+    East,
+    "lock-test",
+    "an iron gate with a raven keyhole",
+  )
+  // No key: barred, with what bars the way.
+  assert store.pass(db, "Ada", start, East)
+    == store.Barred("an iron gate with a raven keyhole")
+  // Make the oil tin the key (for the test), and carry it.
+  store.set_item_role(db, start, "tin of lamp oil", "key", Some("lock-test"))
+  let assert Ok(_) = store.take_item(db, start, "Ada", "tin of lamp oil")
+  // Someone else without it is still barred.
+  assert store.pass(db, "Bram", start, East)
+    == store.Barred("an iron gate with a raven keyhole")
+  // With it: unlocked, key left in the lock, and open for good — for anyone.
+  assert store.pass(db, "Ada", start, East)
+    == store.Unlocked("tin of lamp oil", "an iron gate with a raven keyhole")
+  assert store.inventory(db, "Ada") == []
+  assert store.pass(db, "Bram", start, East) == store.Open
+  // Other exits were never locked.
+  assert store.pass(db, "Bram", start, North) == store.Open
+}
+
+pub fn promised_items_test() {
+  let db = store.open(":memory:")
+  let _ = seed.run(db)
+  let key =
+    store.Pending("raven key", "a black iron key", "key", Some("lock-1"))
+  store.add_pending(db, #(2, 0, 0), key)
+  assert store.pending_at(db, #(2, 0, 0)) == [key]
+  assert store.pending_at(db, #(3, 0, 0)) == []
+  store.clear_pending(db, #(2, 0, 0))
+  assert store.pending_at(db, #(2, 0, 0)) == []
+}
+
+pub fn repeats_test() {
+  let before =
+    "A lamplighter's ladder leans against the post, a hooked pole propped beside it."
+  assert builder.repeats(
+    "Water laps the dock. A lamplighter's ladder leans against the post, a hooked pole propped beside it.",
+    before,
+  )
+  assert !builder.repeats(
+    "Water laps at a sagging dock, and a ladder lies broken in the mud.",
+    before,
+  )
+}
+
+pub fn underground_test() {
+  assert builder.above_ground_words("A narrow alley under a grey sky.", -1)
+    == ["alley", "sky"]
+  assert builder.above_ground_words("A dripping brick sewer tunnel.", -1) == []
+  // At or above street level, streets are fine.
+  assert builder.above_ground_words("A narrow alley under a grey sky.", 0) == []
+}
+
+pub fn key_name_test() {
+  assert builder.key_name("Raven's Claw") == "raven's claw key"
+  assert builder.key_name("brass key") == "brass key"
+  assert builder.key_name("") == "iron key"
+}
+
+pub fn barred_test() {
+  assert types.barred("an iron gate with a raven keyhole")
+    == "An iron gate with a raven keyhole bars the way. It's locked."
+  assert types.barred("A sturdy gate bars the way.")
+    == "A sturdy gate bars the way. It's locked."
 }

@@ -48,6 +48,15 @@ create table if not exists players (
   name text primary key,
   room_id integer not null references rooms(id)
 );
+create table if not exists pending_items (
+  x integer not null,
+  y integer not null,
+  z integer not null,
+  name text not null,
+  looks text not null,
+  role text not null,
+  unlocks text
+);
 create table if not exists closeups (
   key text primary key,
   url text not null,
@@ -80,6 +89,15 @@ pub fn open(path: String) -> Store {
     #("rooms", "z", "integer"),
     #("rooms", "picture", "text"),
     #("items", "looks", "text not null default ''"),
+    // What an item is for. Only items with a role can be picked up.
+    // Existing items predate roles: treat them as valuables.
+    #("items", "role", "text not null default 'valuable'"),
+    // A key: the lock it opens.
+    #("items", "unlocks", "text"),
+    // A locked exit: its lock's id (matched by a key's `unlocks`) and what
+    // the lock looks like.
+    #("exits", "lock_id", "text"),
+    #("exits", "lock_desc", "text"),
   ]
   |> list.each(fn(column) {
     let #(table, name, kind) = column
@@ -131,7 +149,7 @@ pub fn wipe_and(store: Store, seed: fn(Store) -> Int) -> Int {
   exec(
     store,
     "begin;
-    delete from closeups; delete from room_debug; delete from visits; delete from items; delete from players; delete from exits;
+    delete from pending_items; delete from closeups; delete from room_debug; delete from visits; delete from items; delete from players; delete from exits;
     delete from rooms; delete from regions;
     delete from sqlite_sequence;
     commit;",
@@ -330,10 +348,11 @@ fn exits(store: Store, room_id: Int) -> List(Exit) {
     use hint <- decode.field(1, decode.string)
     use target_region <- decode.field(2, decode.string)
     use target <- decode.field(3, decode.optional(decode.int))
-    decode.success(#(direction, hint, target_region, target))
+    use lock <- decode.field(4, decode.optional(decode.string))
+    decode.success(#(direction, hint, target_region, target, lock))
   }
   sqlight.query(
-    "select direction, hint, target_region, target_id from exits where room_id = ?",
+    "select direction, hint, target_region, target_id, lock_desc from exits where room_id = ?",
     store,
     [sqlight.int(room_id)],
     decoder,
@@ -341,7 +360,13 @@ fn exits(store: Store, room_id: Int) -> List(Exit) {
   |> result.unwrap([])
   |> list.filter_map(fn(row) {
     use direction <- result.map(types.parse_direction(row.0))
-    Exit(direction:, hint: row.1, target_region: row.2, target: row.3)
+    Exit(
+      direction:,
+      hint: row.1,
+      target_region: row.2,
+      target: row.3,
+      lock: row.4,
+    )
   })
 }
 
@@ -821,6 +846,178 @@ pub fn set_closeup(
       "insert or replace into closeups (key, url, prompt) values (?, ?, ?)",
       store,
       [sqlight.text(key), sqlight.text(url), sqlight.text(prompt)],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+// LOCKS AND KEYS --------------------------------------------------------------
+
+/// What happens when a player tries an exit.
+pub type Passage {
+  Open
+  /// Locked, and they don't carry its key: what bars the way.
+  Barred(lock: String)
+  /// They carried the key: it's left in the lock, which is now open for
+  /// everyone. The key's name and the lock's description, for the telling.
+  Unlocked(key: String, lock: String)
+}
+
+/// Lock an exit (when its room is built). `lock_id` is what its key opens.
+pub fn lock_exit(
+  store: Store,
+  room_id: Int,
+  d: types.Direction,
+  lock_id: String,
+  desc: String,
+) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "update exits set lock_id = ?, lock_desc = ? where room_id = ? and direction = ?",
+      store,
+      [
+        sqlight.text(lock_id),
+        sqlight.text(desc),
+        sqlight.int(room_id),
+        sqlight.text(types.direction_name(d)),
+      ],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+/// Try to go through an exit: open, barred, or opened now with a key the
+/// player carries (the key is used up and the lock cleared, for good).
+pub fn pass(
+  store: Store,
+  player: String,
+  room_id: Int,
+  d: types.Direction,
+) -> Passage {
+  let lock =
+    sqlight.query(
+      "select lock_id, lock_desc from exits where room_id = ? and direction = ? and lock_id is not null",
+      store,
+      [sqlight.int(room_id), sqlight.text(types.direction_name(d))],
+      {
+        use id <- decode.field(0, decode.string)
+        use desc <- decode.field(1, decode.optional(decode.string))
+        decode.success(#(id, option.unwrap(desc, "something")))
+      },
+    )
+  case lock {
+    Ok([#(lock_id, desc)]) ->
+      case
+        sqlight.query(
+          "select id, name from items where holder = ? and unlocks = ? limit 1",
+          store,
+          [sqlight.text(player), sqlight.text(lock_id)],
+          {
+            use id <- decode.field(0, decode.int)
+            use name <- decode.field(1, decode.string)
+            decode.success(#(id, name))
+          },
+        )
+      {
+        Ok([#(key_id, key_name)]) -> {
+          let assert Ok(_) =
+            sqlight.query(
+              "delete from items where id = ?",
+              store,
+              [sqlight.int(key_id)],
+              decode.success(Nil),
+            )
+          let assert Ok(_) =
+            sqlight.query(
+              "update exits set lock_id = null, lock_desc = null where lock_id = ?",
+              store,
+              [sqlight.text(lock_id)],
+              decode.success(Nil),
+            )
+          Unlocked(key: key_name, lock: desc)
+        }
+        _ -> Barred(desc)
+      }
+    _ -> Open
+  }
+}
+
+/// Give items a role (and a key the lock it opens), after the room is
+/// written.
+pub fn set_item_role(
+  store: Store,
+  room_id: Int,
+  name: String,
+  role: String,
+  unlocks: Option(String),
+) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "update items set role = ?, unlocks = ? where room_id = ? and name = ?",
+      store,
+      [
+        sqlight.text(role),
+        sqlight.nullable(sqlight.text, unlocks),
+        sqlight.int(room_id),
+        sqlight.text(name),
+      ],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+/// An item promised to whatever room gets built at a grid cell: a key for a
+/// lock nearby, placed where it can be reached without that lock.
+pub type Pending {
+  Pending(name: String, looks: String, role: String, unlocks: Option(String))
+}
+
+pub fn add_pending(store: Store, cell: types.Cell, item: Pending) -> Nil {
+  let #(x, y, z) = cell
+  let assert Ok(_) =
+    sqlight.query(
+      "insert into pending_items (x, y, z, name, looks, role, unlocks) values (?, ?, ?, ?, ?, ?, ?)",
+      store,
+      [
+        sqlight.int(x),
+        sqlight.int(y),
+        sqlight.int(z),
+        sqlight.text(item.name),
+        sqlight.text(item.looks),
+        sqlight.text(item.role),
+        sqlight.nullable(sqlight.text, item.unlocks),
+      ],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+/// Items promised to a cell (without removing them).
+pub fn pending_at(store: Store, cell: types.Cell) -> List(Pending) {
+  let #(x, y, z) = cell
+  sqlight.query(
+    "select name, looks, role, unlocks from pending_items where x = ? and y = ? and z = ?",
+    store,
+    [sqlight.int(x), sqlight.int(y), sqlight.int(z)],
+    {
+      use name <- decode.field(0, decode.string)
+      use looks <- decode.field(1, decode.string)
+      use role <- decode.field(2, decode.string)
+      use unlocks <- decode.field(3, decode.optional(decode.string))
+      decode.success(Pending(name:, looks:, role:, unlocks:))
+    },
+  )
+  |> result.unwrap([])
+}
+
+/// The room at `cell` has been built with its promised items: forget them.
+pub fn clear_pending(store: Store, cell: types.Cell) -> Nil {
+  let #(x, y, z) = cell
+  let assert Ok(_) =
+    sqlight.query(
+      "delete from pending_items where x = ? and y = ? and z = ?",
+      store,
+      [sqlight.int(x), sqlight.int(y), sqlight.int(z)],
       decode.success(Nil),
     )
   Nil
