@@ -19,6 +19,17 @@ export function after(ms, callback) {
 
 // Keep the newest chronicle entry on screen (above the command bar), and
 // the journal at its newest.
+// Bring the scene (the room's picture) into view, below the top bar. Only
+// if it's out of view, so a desktop with everything on screen stays put.
+export function showScene() {
+  const scene = document.getElementById("scene");
+  if (!scene) return;
+  const top = scene.getBoundingClientRect().top;
+  if (top < 60 || top > window.innerHeight * 0.5) {
+    scene.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+}
+
 export function revealLatest() {
   const feed = document.querySelector(".chronicle-feed");
   const last = feed && feed.lastElementChild;

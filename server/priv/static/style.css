@@ -400,7 +400,8 @@ button.slot:hover { background: var(--s-high); }
   .location-name { font-size: 1.25rem; }
   .columns { grid-template-columns: 1fr; gap: 12px; }
   .main-col, .side-col { gap: 12px; display: contents; }
-  .scene { order: 1; } .chronicle { order: 2; } .compass { order: 3; }
+  /* No compass on phones: the ways out are labelled on the picture. */
+  .scene { order: 1; } .chronicle { order: 2; } .compass { display: none; }
   .curios { order: 4; } .souls { order: 5; } .satchel { order: 6; } .glimpse-card { order: 7; }
   .wide-only { display: none; }
   .columns > .main-col > *, .columns > .side-col > * { margin-bottom: 12px; }
@@ -408,6 +409,7 @@ button.slot:hover { background: var(--s-high); }
   .scene { padding: 6px; }
   .scene-frame { height: auto; aspect-ratio: 16 / 10; }
   .scene-label { font-size: 10px; padding: .3rem .55rem; }
+  .scene-tag { display: none; } /* the location card names the region; north needs the room */
   .chronicle, .souls, .curios, .compass, .satchel { padding: 14px; }
   .entry.latest { font-size: 1.15rem; }
   .tiles { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 78%; overflow-x: auto; scrollbar-width: none; }

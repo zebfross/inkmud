@@ -52,10 +52,11 @@ browser (Lustre) ──websocket──▶ Gleam server
   joins that room, so walking around a block brings you back — loops form on
   their own. A new room is also joined to any neighbour whose exits point
   into its cell. Worlds from before coordinates are placed once at startup.
-- **Phones are first-class.** On a narrow screen the picture becomes a banner
-  (shrinking while you type), the story fills the middle, and a sideways row
-  of actions plus the command box sit at the bottom. Hold a way out to
-  glimpse it; tap to go. The map pans with one finger and pinches to zoom.
+- **Phones are first-class.** On a narrow screen the panels stack: the
+  picture (its ways out labelled on it; tap one to go), the chronicle,
+  what's here and your satchel, with the command box and Story / Satchel /
+  Map tabs at the bottom. Moving keeps the new room's picture in view rather
+  than jumping to its text. The map pans with one finger and pinches to zoom.
 - **Same browser, same player.** Each browser keeps a random device key. A
   reconnect with your name from the same browser (a refresh, a phone waking
   up while its old connection lingers, a second tab) takes over and the old

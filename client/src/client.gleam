@@ -42,6 +42,9 @@ fn ffi_focus_input() -> Nil
 @external(javascript, "./client_ffi.mjs", "deviceKey")
 fn ffi_device_key() -> String
 
+@external(javascript, "./client_ffi.mjs", "showScene")
+fn ffi_show_scene() -> Nil
+
 @external(javascript, "./client_ffi.mjs", "revealLatest")
 fn ffi_reveal_latest() -> Nil
 
@@ -107,6 +110,9 @@ type Model {
     inventory: List(protocol.ItemView),
     /// The full history, opened on demand (the screen shows the latest).
     journal_open: Bool,
+    /// Just moved (or moving): the new room's picture is what to show, so
+    /// its description arriving doesn't pull the page down to the text.
+    on_the_move: Bool,
     /// The server allows developer actions.
     dev_tools: Bool,
     /// The Reset world button was clicked once; waiting for "Yes".
@@ -188,6 +194,7 @@ fn init(_) -> #(Model, Effect(Msg)) {
       room: None,
       inventory: [],
       journal_open: False,
+      on_the_move: False,
       dev_tools: False,
       confirming_reset: False,
       pending_name: case saved {
@@ -314,7 +321,7 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     DebugKey(_) -> #(model, effect.none())
     ToggleMore -> #(Model(..model, more_open: !model.more_open), effect.none())
     Noop -> #(model, effect.none())
-    Scrolled -> #(model, scroll())
+    Scrolled -> #(model, follow_text(model))
     ExitTap(direction) ->
       case model.held {
         // The tap at the end of a hold: it was a look, not a step.
@@ -382,10 +389,48 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 }
 
 fn run(model: Model, command: String) -> #(Model, Effect(Msg)) {
+  let model = Model(..add(model, Echo, command), on_the_move: is_move(command))
   #(
-    add(model, Echo, command),
-    effect.batch([send(model, protocol.Command(command)), scroll()]),
+    model,
+    effect.batch([send(model, protocol.Command(command)), follow_text(model)]),
   )
+}
+
+fn is_move(command: String) -> Bool {
+  let c = string.lowercase(string.trim(command))
+  list.contains(
+    [
+      "n",
+      "s",
+      "e",
+      "w",
+      "u",
+      "d",
+      "north",
+      "south",
+      "east",
+      "west",
+      "up",
+      "down",
+    ],
+    c,
+  )
+  || string.starts_with(c, "go ")
+}
+
+/// After new text: keep the journal at its newest, and bring the newest
+/// chronicle entry into view, unless the player is moving, when the new
+/// room's picture is what they should see.
+fn follow_text(model: Model) -> Effect(Msg) {
+  case model.on_the_move {
+    True -> effect.after_paint(fn(_, _) { ffi_scroll_log() })
+    False -> scroll()
+  }
+}
+
+/// Bring the scene (the new room's picture) into view.
+fn show_scene() -> Effect(Msg) {
+  effect.after_paint(fn(_, _) { ffi_show_scene() })
 }
 
 fn recall(model: Model, pos: Int) -> #(Model, Effect(Msg)) {
@@ -505,7 +550,15 @@ fn receive(model: Model, msg: ServerMsg) -> #(Model, Effect(Msg)) {
             False -> effect.none()
           },
         ])
-      #(Model(..model, room: Some(room)), effect.batch([scroll(), follow]))
+      // A new room: show its picture, and hold the text where it is (its
+      // description is right under the picture) until the next command.
+      case new_room {
+        True -> #(
+          Model(..model, room: Some(room), on_the_move: True),
+          effect.batch([show_scene(), follow]),
+        )
+        False -> #(Model(..model, room: Some(room)), follow)
+      }
     }
     protocol.Line(tone, text) -> {
       let kind = case tone {
@@ -513,7 +566,8 @@ fn receive(model: Model, msg: ServerMsg) -> #(Model, Effect(Msg)) {
         protocol.Social -> Social
         protocol.System -> System
       }
-      #(add(model, kind, text), scroll())
+      let model = add(model, kind, text)
+      #(model, follow_text(model))
     }
     protocol.Art(room_id, url) ->
       case model.room {
@@ -523,8 +577,14 @@ fn receive(model: Model, msg: ServerMsg) -> #(Model, Effect(Msg)) {
         )
         _ -> #(model, effect.none())
       }
-    protocol.Busy(text) -> #(add(model, Waiting, text), scroll())
-    protocol.Closeup(name, url) -> #(add(model, Picture(url), name), scroll())
+    protocol.Busy(text) -> {
+      let model = add(model, Waiting, text)
+      #(model, follow_text(model))
+    }
+    protocol.Closeup(name, url) -> {
+      let model = add(model, Picture(url), name)
+      #(model, follow_text(model))
+    }
     protocol.Inventory(items) -> #(
       Model(..model, inventory: items),
       effect.none(),
@@ -1212,7 +1272,6 @@ fn view_tabs() -> Element(Msg) {
   }
   html.nav([class("tabs")], [
     tab("#scene", "terminal", "Story"),
-    tab("#compass", "explore", "Compass"),
     tab("#satchel", "backpack", "Satchel"),
     html.button([class("tab"), event.on_click(OpenMap)], [
       icon("map"),
