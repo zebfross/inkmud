@@ -142,10 +142,17 @@ newcomers can rise and nobody sits on top forever. Standing is optional
 | War on ‹faction› | +50% influence for taking that faction's districts |
 | Light (or darken) the streets | lamp actions count double |
 
+**Influence only opens the door.** It decides who may stand, nothing more.
+Only votes decide who leads.
+
 **Vote.** One vote per member who earned any influence this term. That keeps
 out drive-by and second-tab voters (on top of accounts). Voting closes at
-the reckoning. If nobody votes, the top earner among the candidates leads.
-If nobody stands, the top earner leads by default.
+the reckoning, and the candidate with the most votes leads. A tie goes to
+whoever reached that count first.
+
+**No votes or no candidates.** The sitting leader carries on for another
+term, with no new promise. If there is no sitting leader, the faction stays
+leaderless: no promise, and its pushback is aimed at its home region.
 
 **Office.**
 - The title shows next to the leader's name wherever it appears.
@@ -154,8 +161,9 @@ If nobody stands, the top earner leads by default.
   [pushback](#pushback) is aimed. That's enough to matter, not enough to
   wreck things.
 - The leader's name goes on that term's plaque.
-- **Absence:** a leader who doesn't log in for 3 days is replaced by the
-  runner-up.
+- **Absence:** a leader who doesn't log in for 3 days steps down, and the
+  candidate with the next-most votes that term takes over. With no such
+  candidate, the faction is leaderless until the next reckoning.
 
 **Not in this version:** taxes, tolls, impeachment, alliances, attacking
 other players.
