@@ -329,10 +329,54 @@ fn run(session: Session, cmd: Command, interpreted: Bool, conn) -> Session {
     command.Inventory -> {
       let items = store.inventory(session.deps.store, name)
       send(conn, protocol.Inventory(items))
-      system(conn, case items {
+      let light = store.carried_light(session.deps.store, name)
+      let described =
+        list.map(items, fn(item) {
+          case light {
+            Some(#(_, lit, oil)) if lit == item ->
+              case oil {
+                0 -> item <> " (out of oil)"
+                _ ->
+                  item
+                  <> " (oil for "
+                  <> int.to_string(oil)
+                  <> " steps in the dark)"
+              }
+            _ -> item
+          }
+        })
+      system(conn, case described {
         [] -> "You are carrying nothing."
-        _ -> "You are carrying: " <> string.join(items, ", ") <> "."
+        _ -> "You are carrying: " <> string.join(described, ", ") <> "."
       })
+      session
+    }
+    command.Refill -> {
+      case store.refill(session.deps.store, name) {
+        Ok(#(light, fuel, oil)) -> {
+          send(
+            conn,
+            Line(
+              Narration,
+              "You pour the "
+                <> fuel
+                <> " into the "
+                <> light
+                <> ". It burns bright again, with oil for "
+                <> int.to_string(oil)
+                <> " steps in the dark.",
+            ),
+          )
+          send(
+            conn,
+            protocol.Inventory(store.inventory(session.deps.store, name)),
+          )
+          // Lit again in a dark place: see it now.
+          tell_room(room.Refresh)
+          tell_room(room.Look(name))
+        }
+        Error(reason) -> system(conn, reason)
+      }
       session
     }
     command.Help -> {
@@ -350,9 +394,13 @@ fn run(session: Session, cmd: Command, interpreted: Bool, conn) -> Session {
       let self = session.self
       let deps = session.deps
       background(session, fn(room_data, inventory) {
-        // Only things you could pick up (or carry) are worth a closer look.
-        case find_examinable(deps.store, room_data, name, thing) {
-          Some(found) -> {
+        // Only things you could pick up (or carry) are worth a closer look,
+        // and only if you can see them.
+        let blind = room_data.dark && !store.has_light(deps.store, name)
+        case blind, find_examinable(deps.store, room_data, name, thing) {
+          True, _ ->
+            process.send(self, Out(Line(System, "It's too dark to see.")))
+          False, Some(found) -> {
             process.send(
               self,
               Out(examine(deps.fast, room_data, inventory, found.name)),
@@ -361,7 +409,7 @@ fn run(session: Session, cmd: Command, interpreted: Bool, conn) -> Session {
               process.send(self, Out(protocol.Closeup(found.name, url)))
             })
           }
-          None ->
+          False, None ->
             process.send(
               self,
               Out(Line(
@@ -456,7 +504,9 @@ fn on_event(session: Session, event: Event, conn) -> Session {
         Some(r) -> process.send(r, room.Leave(name, process.self(), Some(d)))
         None -> Nil
       }
-      enter(session, id, Some(types.opposite(d)), conn)
+      let session = enter(session, id, Some(types.opposite(d)), conn)
+      burn_in_the_dark(session, name, id, conn)
+      session
     }
     // Typed in a room the player has since left: it no longer means anything.
     // The old room's process is gone; start over at the new first room.
@@ -520,7 +570,7 @@ fn interpret(
 ) -> Result(String, Nil) {
   let prompt =
     "You translate a player's input in a text adventure into ONE game command.\n"
-    <> "Allowed commands: go north | go south | go east | go west | go up | go down | look | look <north/south/east/west/up/down> | examine <thing> | take <item> | drop <item> | inventory | say <words> | help\n\n"
+    <> "Allowed commands: go north | go south | go east | go west | go up | go down | fill lantern | look | look <north/south/east/west/up/down> | examine <thing> | take <item> | drop <item> | inventory | say <words> | help\n\n"
     <> context(room_data, inventory)
     <> "\n\nPlayer input: \""
     <> text
@@ -652,5 +702,44 @@ fn find_examinable(
         list.all(words, string.contains(name, _))
       })
       |> option.from_result
+  }
+}
+
+// LIGHT -----------------------------------------------------------------------
+
+/// A step into a dark place uses a unit of the player's light. Warn as it
+/// runs low; when it goes out, the place goes dark for them.
+fn burn_in_the_dark(session: Session, name: String, room_id: Int, conn) -> Nil {
+  case store.load_room(session.deps.store, room_id) {
+    Ok(here) if here.dark ->
+      case store.burn(session.deps.store, name) {
+        Some(#(light, 0)) -> {
+          send(
+            conn,
+            Line(
+              Narration,
+              "Your " <> light <> " sputters and goes out. Darkness closes in.",
+            ),
+          )
+          case session.room {
+            Some(r) -> {
+              process.send(r, room.Refresh)
+              process.send(r, room.Look(name))
+            }
+            None -> Nil
+          }
+        }
+        Some(#(light, left)) if left == 10 || left == 5 || left == 2 ->
+          system(
+            conn,
+            "Your "
+              <> light
+              <> " gutters: oil for "
+              <> int.to_string(left)
+              <> " more steps in the dark.",
+          )
+        _ -> Nil
+      }
+    _ -> Nil
   }
 }

@@ -68,6 +68,13 @@ browser (Lustre) ──websocket──▶ Gleam server
   reachable without that lock (beyond another of the room's ways out, or
   the previous room's), and whichever way that place is built, it contains
   the key. A key opens its lock for everyone and stays in it.
+- **Light and dark.** Some places below the streets are pitch dark: without
+  a lit lantern you see no description, picture or items, and can only feel
+  your way toward somewhere lit. A lantern burns one unit of oil per step
+  into a dark place, warns as it runs low, and goes out; `fill lantern` pours
+  in a tin of oil (which turns up in rooms once lanterns exist). Whenever a
+  dark place is built and no lantern is free, one is promised to an unbuilt
+  street-level place, which is never dark.
 - **Levels mean something.** Below street level is always underground
   (sewers, tunnels, cellars, crypts); above is rooftops, towers, bridges.
 - **Your map** (the Map button) shows the rooms you've visited at their grid

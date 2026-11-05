@@ -651,6 +651,9 @@ fn view_game(model: Model) -> Element(Msg) {
 fn view_art(room: Option(RoomView)) -> Element(Msg) {
   html.figure([class("art")], [
     case room {
+      // Pitch dark without a light: nothing to see, not even the picture.
+      Some(protocol.RoomView(dark: True, ..)) ->
+        html.div([class("picture dark")], [text("pitch dark")])
       Some(protocol.RoomView(art: Some(url), name:, ..)) ->
         html.img([attribute.src(url), attribute.alt(name), class("picture")])
       _ ->

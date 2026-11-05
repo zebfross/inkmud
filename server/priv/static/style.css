@@ -89,6 +89,10 @@ button, input { font: inherit; color: inherit; }
   background: radial-gradient(circle at 40% 35%, var(--paper-deep), var(--paper) 70%);
   border: 1px dashed var(--rule); box-shadow: none; animation: breathe 3s ease-in-out infinite;
 }
+.picture.dark {
+  display: grid; place-items: center; background: #050505; color: #3a362f;
+  font-style: italic; border: 0; animation: none;
+}
 @keyframes develop { from { opacity: 0; filter: blur(6px) sepia(.6); } to { opacity: 1; filter: none; } }
 @keyframes breathe { 50% { opacity: .55; } }
 .art figcaption { margin-top: .6rem; font-size: 1.15rem; font-weight: 600; }

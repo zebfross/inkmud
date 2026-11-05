@@ -96,6 +96,9 @@ pub fn open(path: String) -> Store {
     #("items", "unlocks", "text"),
     // A locked exit: its lock's id (matched by a key's `unlocks`) and what
     // the lock looks like.
+    #("rooms", "dark", "integer not null default 0"),
+    // A light's remaining oil.
+    #("items", "charge", "integer not null default 0"),
     #("exits", "lock_id", "text"),
     #("exits", "lock_desc", "text"),
   ]
@@ -232,6 +235,7 @@ pub fn load_room(store: Store, id: Int) -> Result(Room, Nil) {
     use y <- decode.field(6, decode.optional(decode.int))
     use z <- decode.field(7, decode.optional(decode.int))
     use picture <- decode.field(8, decode.optional(decode.string))
+    use dark <- decode.field(9, decode.int)
     decode.success(#(
       region,
       name,
@@ -239,13 +243,13 @@ pub fn load_room(store: Store, id: Int) -> Result(Room, Nil) {
       features,
       art_url,
       #(x, y, z),
-      option.unwrap(picture, ""),
+      #(option.unwrap(picture, ""), dark == 1),
     ))
   }
   use row <- result.try(
     case
       sqlight.query(
-        "select region_id, name, description, features, art_url, x, y, z, picture from rooms where id = ?",
+        "select region_id, name, description, features, art_url, x, y, z, picture, dark from rooms where id = ?",
         store,
         [sqlight.int(id)],
         decoder,
@@ -255,7 +259,15 @@ pub fn load_room(store: Store, id: Int) -> Result(Room, Nil) {
       _ -> Error(Nil)
     },
   )
-  let #(region, name, description, features, art_url, #(x, y, z), picture) = row
+  let #(
+    region,
+    name,
+    description,
+    features,
+    art_url,
+    #(x, y, z),
+    #(picture, dark),
+  ) = row
   Ok(Room(
     id:,
     region:,
@@ -271,6 +283,7 @@ pub fn load_room(store: Store, id: Int) -> Result(Room, Nil) {
     x: option.unwrap(x, 0),
     y: option.unwrap(y, 0),
     z: option.unwrap(z, 0),
+    dark:,
   ))
 }
 
@@ -1035,4 +1048,200 @@ fn takeable() -> String {
   |> list.map(fn(r) { "'" <> r <> "'" })
   |> string.join(", ")
   <> ")"
+}
+
+// LIGHT AND DARK --------------------------------------------------------------
+
+pub fn set_dark(store: Store, room_id: Int) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "update rooms set dark = 1 where id = ?",
+      store,
+      [sqlight.int(room_id)],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+/// Fill a newly placed light (or anything given a charge).
+pub fn set_item_charge(
+  store: Store,
+  room_id: Int,
+  name: String,
+  charge: Int,
+) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "update items set charge = ? where room_id = ? and name = ?",
+      store,
+      [sqlight.int(charge), sqlight.int(room_id), sqlight.text(name)],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+/// The best light a player carries (most oil): id, name, oil left.
+pub fn carried_light(
+  store: Store,
+  player: String,
+) -> Option(#(Int, String, Int)) {
+  case
+    sqlight.query(
+      "select id, name, charge from items where holder = ? and role = 'light' order by charge desc limit 1",
+      store,
+      [sqlight.text(player)],
+      {
+        use id <- decode.field(0, decode.int)
+        use name <- decode.field(1, decode.string)
+        use charge <- decode.field(2, decode.int)
+        decode.success(#(id, name, charge))
+      },
+    )
+  {
+    Ok([light]) -> Some(light)
+    _ -> None
+  }
+}
+
+/// Carrying a light that still has oil.
+pub fn has_light(store: Store, player: String) -> Bool {
+  case carried_light(store, player) {
+    Some(#(_, _, charge)) -> charge > 0
+    None -> False
+  }
+}
+
+/// A step in the dark: the light burns one unit. Its name and what's left,
+/// or `None` if the player has no lit light.
+pub fn burn(store: Store, player: String) -> Option(#(String, Int)) {
+  case carried_light(store, player) {
+    Some(#(id, name, charge)) if charge > 0 -> {
+      let left = charge - 1
+      let assert Ok(_) =
+        sqlight.query(
+          "update items set charge = ? where id = ?",
+          store,
+          [sqlight.int(left), sqlight.int(id)],
+          decode.success(Nil),
+        )
+      Some(#(name, left))
+    }
+    _ -> None
+  }
+}
+
+/// Pour a carried fuel item into the emptiest carried light. The light's
+/// name, the fuel's name and the oil now in the light.
+pub fn refill(
+  store: Store,
+  player: String,
+) -> Result(#(String, String, Int), String) {
+  let lights =
+    sqlight.query(
+      "select id, name, charge from items where holder = ? and role = 'light' order by charge asc limit 1",
+      store,
+      [sqlight.text(player)],
+      {
+        use id <- decode.field(0, decode.int)
+        use name <- decode.field(1, decode.string)
+        use charge <- decode.field(2, decode.int)
+        decode.success(#(id, name, charge))
+      },
+    )
+  let fuels =
+    sqlight.query(
+      "select id, name from items where holder = ? and role = 'fuel' order by id limit 1",
+      store,
+      [sqlight.text(player)],
+      {
+        use id <- decode.field(0, decode.int)
+        use name <- decode.field(1, decode.string)
+        decode.success(#(id, name))
+      },
+    )
+  case lights, fuels {
+    Ok([]), _ | Error(_), _ -> Error("You have nothing to fill.")
+    _, Ok([]) | _, Error(_) -> Error("You have no oil to fill it with.")
+    Ok([#(light_id, light, charge), ..]), Ok([#(fuel_id, fuel), ..]) -> {
+      let now = charge + types.lantern_oil
+      let assert Ok(_) =
+        sqlight.query(
+          "update items set charge = ? where id = ?",
+          store,
+          [sqlight.int(now), sqlight.int(light_id)],
+          decode.success(Nil),
+        )
+      let assert Ok(_) =
+        sqlight.query(
+          "delete from items where id = ?",
+          store,
+          [sqlight.int(fuel_id)],
+          decode.success(Nil),
+        )
+      Ok(#(light, fuel, now))
+    }
+  }
+}
+
+/// Lights nobody is carrying: lying in a room, or promised to one.
+pub fn free_lights(store: Store) -> Int {
+  let count = fn(sql) {
+    case
+      sqlight.query(sql, store, [], decode.field(0, decode.int, decode.success))
+    {
+      Ok([n]) -> n
+      _ -> 0
+    }
+  }
+  count(
+    "select count(*) from items where role = 'light' and room_id is not null",
+  )
+  + count("select count(*) from pending_items where role = 'light'")
+}
+
+/// Any lights in the world at all (so oil is worth finding).
+pub fn any_lights(store: Store) -> Bool {
+  case
+    sqlight.query(
+      "select (select count(*) from items where role = 'light') + (select count(*) from pending_items where role = 'light')",
+      store,
+      [],
+      decode.field(0, decode.int, decode.success),
+    )
+  {
+    Ok([n]) -> n > 0
+    _ -> False
+  }
+}
+
+/// An unbuilt cell at street level next to a built street-level room,
+/// through one of its open, unlocked ways out: somewhere a light can be
+/// promised that anyone can reach without one. Nearest the centre first.
+pub fn street_cell_for_light(store: Store) -> Option(types.Cell) {
+  sqlight.query(
+    "select r.x, r.y, r.z, e.direction from exits e join rooms r on r.id = e.room_id
+     where r.z = 0 and r.dark = 0 and e.target_id is null and e.lock_id is null
+       and e.direction not in ('up', 'down')
+     order by abs(r.x) + abs(r.y), r.id",
+    store,
+    [],
+    {
+      use x <- decode.field(0, decode.int)
+      use y <- decode.field(1, decode.int)
+      use z <- decode.field(2, decode.int)
+      use d <- decode.field(3, decode.string)
+      decode.success(#(#(x, y, z), d))
+    },
+  )
+  |> result.unwrap([])
+  |> list.filter_map(fn(row) {
+    use d <- result.try(types.parse_direction(row.1))
+    let cell = types.step(row.0, d)
+    case room_at(store, cell) {
+      None -> Ok(cell)
+      Some(_) -> Error(Nil)
+    }
+  })
+  |> list.first
+  |> option.from_result
 }

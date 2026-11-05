@@ -221,25 +221,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     Traverse(player, room_id, direction, reply) ->
-      case store.pass(state.store, player, room_id, direction) {
-        store.Barred(lock) -> {
-          reply(Blocked(types.barred(lock)))
+      case feel_the_way(state.store, player, room_id, direction) {
+        Error(reason) -> {
+          reply(Blocked(reason))
           actor.continue(state)
         }
-        store.Unlocked(key:, ..) -> {
-          reply(Opened(
-            "You fit the "
-            <> key
-            <> " into the lock. It turns with a heavy click and the way opens; you leave the key where it is.",
-          ))
-          // The exit changed for everyone: its room shows it open.
-          case dict.get(state.rooms, room_id) {
-            Ok(r) -> process.send(r, room.Refresh)
-            Error(Nil) -> Nil
-          }
-          traverse(state, room_id, direction, reply)
-        }
-        store.Open -> traverse(state, room_id, direction, reply)
+        Ok(Nil) -> through_lock(state, player, room_id, direction, reply)
       }
 
     Prefetch(room_id) ->
@@ -301,6 +288,70 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       |> run_next
       |> actor.continue
     }
+  }
+}
+
+/// In a dark place without a light, you can't find the ways out: only feel
+/// your way back toward somewhere already lit.
+fn feel_the_way(
+  store: Store,
+  player: String,
+  room_id: Int,
+  direction: Direction,
+) -> Result(Nil, String) {
+  case store.load_room(store, room_id) {
+    Ok(from) if from.dark ->
+      case store.has_light(store, player) {
+        True -> Ok(Nil)
+        False -> {
+          let lit = case types.find_exit(from, direction) {
+            Ok(types.Exit(target: Some(t), lock: None, ..)) ->
+              case store.load_room(store, t) {
+                Ok(beyond) -> !beyond.dark
+                Error(Nil) -> False
+              }
+            _ -> False
+          }
+          case lit {
+            True -> Ok(Nil)
+            False ->
+              Error(
+                "It's too dark to find your way. You can only feel your way back toward somewhere lit.",
+              )
+          }
+        }
+      }
+    _ -> Ok(Nil)
+  }
+}
+
+/// Past any darkness: through the exit's lock, if it has one.
+fn through_lock(
+  state: State,
+  player: String,
+  room_id: Int,
+  direction: Direction,
+  reply: fn(Arrival) -> Nil,
+) -> actor.Next(State, Message) {
+  case store.pass(state.store, player, room_id, direction) {
+    store.Barred(lock) -> {
+      reply(Blocked(types.barred(lock)))
+      actor.continue(state)
+    }
+    store.Unlocked(key:, ..) -> {
+      reply(Opened(
+        "You fit the "
+        <> key
+        <> " into the lock. It turns with a heavy click and the way opens; you leave the key where it is.",
+      ))
+      // The exit changed for everyone: its room shows it open.
+      case dict.get(state.rooms, room_id) {
+        Ok(r) -> process.send(r, room.Refresh)
+        Error(Nil) -> Nil
+      }
+      traverse(state, room_id, direction, reply)
+    }
+    store.Open -> traverse(state, room_id, direction, reply)
   }
 }
 

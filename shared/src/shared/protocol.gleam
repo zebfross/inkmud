@@ -89,6 +89,9 @@ pub type RoomView {
     others: List(String),
     /// URL of the room's picture, once one exists.
     art: Option(String),
+    /// Pitch dark and the player has no light: shown nothing but the ways
+    /// back toward light.
+    dark: Bool,
   )
 }
 
@@ -287,6 +290,7 @@ fn room_json(view: RoomView) -> Json {
     #("features", json.array(view.features, json.string)),
     #("others", json.array(view.others, json.string)),
     #("art", json.nullable(view.art, json.string)),
+    #("dark", json.bool(view.dark)),
   ])
 }
 
@@ -331,6 +335,7 @@ fn room_decoder() -> Decoder(RoomView) {
   )
   use others <- decode.field("others", decode.list(decode.string))
   use art <- decode.optional_field("art", None, decode.optional(decode.string))
+  use dark <- decode.optional_field("dark", False, decode.bool)
   decode.success(RoomView(
     id:,
     region:,
@@ -341,6 +346,7 @@ fn room_decoder() -> Decoder(RoomView) {
     features:,
     others:,
     art:,
+    dark:,
   ))
 }
 

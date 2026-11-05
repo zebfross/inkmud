@@ -25,6 +25,38 @@ const attempts = 4
 /// Percent of new rooms asked to have a locked way out (when they can).
 const lock_chance = 30
 
+/// Percent of places below the streets that are pitch dark.
+const dark_chance = 45
+
+/// Percent of new rooms that get a tin of oil, once lights exist.
+const fuel_chance = 15
+
+fn lantern() -> store.Pending {
+  store.Pending(
+    name: "bullseye lantern",
+    looks: "a small tin lantern with a round glass lens and a wire handle",
+    role: "light",
+    unlocks: None,
+  )
+}
+
+fn oil_tin() -> store.Pending {
+  store.Pending(
+    name: "tin of lamp oil",
+    looks: "a small dented tin can of oil with a cork stopper",
+    role: "fuel",
+    unlocks: None,
+  )
+}
+
+fn cell_text(cell: types.Cell) -> String {
+  int.to_string(cell.0)
+  <> ","
+  <> int.to_string(cell.1)
+  <> ","
+  <> int.to_string(cell.2)
+}
+
 type Proposal {
   Proposal(
     name: String,
@@ -139,9 +171,16 @@ fn invent(
   // a lock here: only if at least two new ways out could lead somewhere new
   // (one locked, one to the room holding its key), which the model's exits
   // decide; checked again after it answers.
-  let required = store.pending_at(store, target)
-  let want_lock = int.random(100) < lock_chance
   let level = target.2
+  // Some places below the streets are pitch dark (see `dark_chance`).
+  let dark = level < 0 && int.random(100) < dark_chance
+  // Once lights exist, oil to keep them burning turns up now and then.
+  let fuel = case store.any_lights(store) && int.random(100) < fuel_chance {
+    True -> [oil_tin()]
+    False -> []
+  }
+  let required = list.append(store.pending_at(store, target), fuel)
+  let want_lock = int.random(100) < lock_chance
   let prompt =
     prompt(
       store,
@@ -153,6 +192,7 @@ fn invent(
       required,
       want_lock,
       level,
+      dark,
     )
   let ctx =
     Context(
@@ -229,8 +269,34 @@ fn invent(
       // model's own items are valuables (the column's default).
       list.each(required, fn(r) {
         store.set_item_role(store, id, r.name, r.role, r.unlocks)
+        case r.role {
+          "light" -> store.set_item_charge(store, id, r.name, types.lantern_oil)
+          _ -> Nil
+        }
       })
       store.clear_pending(store, target)
+      let dark_note = case dark {
+        False -> ""
+        True -> {
+          store.set_dark(store, id)
+          // Never a dark place without a light to be had: if none is free,
+          // promise one to an unbuilt place at street level (never dark,
+          // reachable by anyone).
+          case store.free_lights(store) {
+            0 ->
+              case store.street_cell_for_light(store) {
+                Some(cell) -> {
+                  store.add_pending(store, cell, lantern())
+                  "used: dark; no free light anywhere, so a lantern is promised to the street-level place at "
+                  <> cell_text(cell)
+                }
+                None ->
+                  "used: dark; no free light, and no unbuilt street-level place to promise one to"
+              }
+            _ -> "used: dark (a light is already to be had)"
+          }
+        }
+      }
       // The model often leaves the lock out when asked: then the engine
       // picks the way to lock and asks just for what the lock looks like.
       let proposal = case want_lock, proposal.lock {
@@ -254,10 +320,14 @@ fn invent(
         store,
         id,
         prompt,
-        list.append(build_log, case lock_note {
-          "" -> []
-          note -> [store.BuildAttempt(feedback: "", reply: "", problem: note)]
-        }),
+        list.append(
+          build_log,
+          [lock_note, dark_note]
+            |> list.filter(non_empty)
+            |> list.map(fn(note) {
+              store.BuildAttempt(feedback: "", reply: "", problem: note)
+            }),
+        ),
       )
       // Joining last: until these run, nobody can walk into a half-written
       // room. Then the neighbours: an unbuilt exit of theirs pointing here
@@ -502,6 +572,7 @@ fn prompt(
   required: List(store.Pending),
   want_lock: Bool,
   level: Int,
+  dark: Bool,
 ) -> String {
   let used = case list.take(list.reverse(store.room_names(store)), 40) {
     [] -> "none yet"
@@ -552,6 +623,11 @@ fn prompt(
   <> around
   <> "\n"
   <> level_rule(level)
+  <> case dark {
+    True ->
+      " It is pitch dark here, with no lamps or candles burning: describe what the player's own lantern, held up, reveals in its small circle of light."
+    False -> ""
+  }
   <> must_contain
   <> "\n\nInvent the new place they arrive in, in your own words. It must match what they saw and fit the region."
   <> "\nReply with JSON only, in exactly this shape:\n"

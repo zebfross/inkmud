@@ -78,7 +78,28 @@ pub fn start(
   started.data
 }
 
+/// Some things need light: in a dark place without one you can't find
+/// what's lying around or see along a way out.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  let needs_sight = case message {
+    Take(name, _) -> Some(#(name, "It's too dark to find anything here."))
+    LookToward(name, _) -> Some(#(name, "It's too dark to see that way."))
+    _ -> None
+  }
+  case needs_sight {
+    Some(#(name, refusal)) ->
+      case sees(state, name) {
+        True -> handle_seen(state, message)
+        False -> {
+          tell(state, name, Line(System, refusal))
+          actor.continue(state)
+        }
+      }
+    None -> handle_seen(state, message)
+  }
+}
+
+fn handle_seen(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Enter(name, owner, notify, from) -> {
       let state = State(..state, owners: dict.insert(state.owners, name, owner))
@@ -255,8 +276,14 @@ fn request_art(state: State) -> State {
 /// The side panel first (the client starts a new section of the log for a
 /// new room), then the description in the story log.
 fn describe(state: State, name: String, notify: Notify) {
-  notify(protocol.Room(view(state, name)))
-  notify(Line(Narration, state.room.description))
+  let view = view(state, name)
+  notify(protocol.Room(view))
+  notify(Line(Narration, view.description))
+}
+
+/// Can this player see here? (Lit places always; dark ones with a light.)
+fn sees(state: State, player: String) -> Bool {
+  !state.room.dark || store.has_light(state.store, player)
 }
 
 /// "To the north, worn stone stairs climb toward a broken bell tower."
@@ -319,21 +346,59 @@ fn view(state: State, for: String) -> protocol.RoomView {
     store.region(state.store, room.region)
     |> result.map(fn(r) { r.name })
     |> result.unwrap("")
-  RoomView(
-    id: room.id,
-    region:,
-    name: room.name,
-    description: room.description,
-    exits: list.map(room.exits, fn(e) {
-      ExitView(types.direction_name(e.direction), e.hint, e.lock)
-    }),
-    items: room.items,
-    features: room.features,
-    others: state.occupants
-      |> list.map(fn(o) { o.0 })
-      |> list.filter(fn(n) { n != for }),
-    art: room.art_url,
-  )
+  let others =
+    state.occupants
+    |> list.map(fn(o) { o.0 })
+    |> list.filter(fn(n) { n != for })
+  case sees(state, for) {
+    True ->
+      RoomView(
+        id: room.id,
+        region:,
+        name: room.name,
+        description: room.description,
+        exits: list.map(room.exits, fn(e) {
+          ExitView(types.direction_name(e.direction), e.hint, e.lock)
+        }),
+        items: room.items,
+        features: room.features,
+        others:,
+        art: room.art_url,
+        dark: False,
+      )
+    // In the dark: no description, picture or items; only the ways out
+    // that lead back to somewhere lit, which you can feel your way along.
+    False ->
+      RoomView(
+        id: room.id,
+        region:,
+        name: "Darkness",
+        description: "It is pitch dark. You can't see a thing, though you can feel your way back toward somewhere lit.",
+        exits: room.exits
+          |> list.filter(fn(e) {
+            case e.target, e.lock {
+              Some(t), None ->
+                case store.load_room(state.store, t) {
+                  Ok(beyond) -> !beyond.dark
+                  Error(Nil) -> False
+                }
+              _, _ -> False
+            }
+          })
+          |> list.map(fn(e) {
+            ExitView(
+              types.direction_name(e.direction),
+              "the way you can feel back toward the light",
+              None,
+            )
+          }),
+        items: [],
+        features: [],
+        others:,
+        art: None,
+        dark: True,
+      )
+  }
 }
 
 fn tell(state: State, name: String, msg: ServerMsg) {

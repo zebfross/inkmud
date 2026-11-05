@@ -45,6 +45,9 @@ pub type Room {
     x: Int,
     y: Int,
     z: Int,
+    /// Pitch dark: without a lit light you see nothing here, and can only
+    /// feel your way back toward somewhere lit.
+    dark: Bool,
   )
 }
 
@@ -82,7 +85,11 @@ pub const all_directions = [North, South, East, West, Up, Down]
 /// Roles an item can have that the game actually does something with. Only
 /// these can be picked up (and examined); add one as its mechanic is built.
 /// Older items without one of these are scenery.
-pub const takeable_roles = ["key"]
+pub const takeable_roles = ["key", "light", "fuel"]
+
+/// Oil a new lantern holds, and what a tin of oil adds: one unit is used
+/// for each step into (or within) a dark place.
+pub const lantern_oil = 30
 
 pub fn direction_name(d: Direction) -> String {
   case d {

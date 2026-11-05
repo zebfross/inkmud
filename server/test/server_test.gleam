@@ -125,6 +125,7 @@ fn room_with(id: Int, exits: List(#(types.Direction, Int))) -> types.Room {
     x: 0,
     y: 0,
     z: 0,
+    dark: False,
   )
 }
 
@@ -385,4 +386,51 @@ pub fn only_takeable_roles_test() {
   assert store.take_item(db, room, "Ada", "brass key") == Ok("brass key")
   // The seed room's pole and oil tin are scenery now.
   assert store.room_items(db, 1) == []
+}
+
+pub fn lantern_and_oil_test() {
+  let db = store.open(":memory:")
+  let _ = seed.run(db)
+  let assert Ok(cellar) =
+    store.insert_room(
+      db,
+      "warrens",
+      "Cellar",
+      "A cellar.",
+      [],
+      ["bullseye lantern", "tin of lamp oil"],
+      [],
+      #(0, 0, -1),
+    )
+  store.set_item_role(db, cellar, "bullseye lantern", "light", None)
+  store.set_item_charge(db, cellar, "bullseye lantern", 2)
+  store.set_item_role(db, cellar, "tin of lamp oil", "fuel", None)
+  // Nobody has it yet: one free light.
+  assert store.free_lights(db) == 1
+  assert !store.has_light(db, "Ada")
+  let assert Ok(_) = store.take_item(db, cellar, "Ada", "bullseye lantern")
+  assert store.free_lights(db) == 0
+  assert store.has_light(db, "Ada")
+  // Two steps in the dark and it's out.
+  assert store.burn(db, "Ada") == Some(#("bullseye lantern", 1))
+  assert store.burn(db, "Ada") == Some(#("bullseye lantern", 0))
+  assert !store.has_light(db, "Ada")
+  assert store.burn(db, "Ada") == None
+  // No oil carried yet.
+  assert store.refill(db, "Ada") == Error("You have no oil to fill it with.")
+  let assert Ok(_) = store.take_item(db, cellar, "Ada", "tin of lamp oil")
+  assert store.refill(db, "Ada")
+    == Ok(#("bullseye lantern", "tin of lamp oil", types.lantern_oil))
+  assert store.has_light(db, "Ada")
+  // The tin is used up.
+  assert store.inventory(db, "Ada") == ["bullseye lantern"]
+}
+
+pub fn light_is_promised_at_street_level_test() {
+  let db = store.open(":memory:")
+  let _ = seed.run(db)
+  // The crossroads has unbuilt ways north, east and west at street level
+  // (down leads below it): a light goes beyond one of those.
+  let assert Some(#(_, _, z)) = store.street_cell_for_light(db)
+  assert z == 0
 }
