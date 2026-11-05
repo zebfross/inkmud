@@ -324,6 +324,7 @@ fn view(state: State, for: String) -> protocol.RoomView {
       ExitView(types.direction_name(e.direction), e.hint)
     }),
     items: room.items,
+    features: room.features,
     others: state.occupants
       |> list.map(fn(o) { o.0 })
       |> list.filter(fn(n) { n != for }),

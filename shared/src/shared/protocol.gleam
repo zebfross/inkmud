@@ -83,6 +83,8 @@ pub type RoomView {
     description: String,
     exits: List(ExitView),
     items: List(String),
+    /// Visual details worth a closer look (examinable).
+    features: List(String),
     others: List(String),
     /// URL of the room's picture, once one exists.
     art: Option(String),
@@ -280,6 +282,7 @@ fn room_json(view: RoomView) -> Json {
       }),
     ),
     #("items", json.array(view.items, json.string)),
+    #("features", json.array(view.features, json.string)),
     #("others", json.array(view.others, json.string)),
     #("art", json.nullable(view.art, json.string)),
   ])
@@ -314,6 +317,11 @@ fn room_decoder() -> Decoder(RoomView) {
   use description <- decode.field("description", decode.string)
   use exits <- decode.field("exits", decode.list(exit))
   use items <- decode.field("items", decode.list(decode.string))
+  use features <- decode.optional_field(
+    "features",
+    [],
+    decode.list(decode.string),
+  )
   use others <- decode.field("others", decode.list(decode.string))
   use art <- decode.optional_field("art", None, decode.optional(decode.string))
   decode.success(RoomView(
@@ -323,6 +331,7 @@ fn room_decoder() -> Decoder(RoomView) {
     description:,
     exits:,
     items:,
+    features:,
     others:,
     art:,
   ))

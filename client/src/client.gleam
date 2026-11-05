@@ -689,14 +689,29 @@ fn view_actions(model: Model) -> Element(Msg) {
     Some(room) ->
       html.div([class("actions")], [
         view_exits(room.exits, model.glimpse),
+        // Things: tap the name to examine it (text and a close-up), or
+        // use the small action beside it.
         group(
           "Here",
-          list.map(room.items, fn(i) { chip("take " <> i, "take " <> i, "") }),
+          list.map(room.items, fn(i) { thing_chip(i, "take", "take " <> i) }),
         ),
         group(
           "Carrying",
           list.map(model.inventory, fn(i) {
-            chip(i, "examine " <> i, "Click to examine")
+            thing_chip(i, "drop", "drop " <> i)
+          }),
+        ),
+        group(
+          "Look closer",
+          list.map(room.features, fn(f) {
+            html.button(
+              [
+                class("chip detail"),
+                attribute.title("Examine " <> f),
+                event.on_click(Run("examine " <> f)),
+              ],
+              [html.span([class("lens")], [text("◉")]), text(short(f, 28))],
+            )
           }),
         ),
         group(
@@ -848,11 +863,34 @@ fn group(title: String, children: List(Element(Msg))) -> Element(Msg) {
   }
 }
 
-fn chip(label: String, command: String, hint: String) -> Element(Msg) {
-  html.button(
-    [class("chip"), attribute.title(hint), event.on_click(Run(command))],
-    [text(label)],
-  )
+/// An item: its name examines it; the second part takes or drops it.
+fn thing_chip(name: String, verb: String, command: String) -> Element(Msg) {
+  html.span([class("thing")], [
+    html.button(
+      [
+        class("chip thing-name"),
+        attribute.title("Examine " <> name),
+        event.on_click(Run("examine " <> name)),
+      ],
+      [html.span([class("lens")], [text("◉")]), text(name)],
+    ),
+    html.button(
+      [
+        class("chip thing-act"),
+        attribute.title(verb <> " " <> name),
+        event.on_click(Run(command)),
+      ],
+      [text(verb)],
+    ),
+  ])
+}
+
+/// A long visual detail cut down for a chip ("towering cast-iron gas…").
+fn short(text: String, max: Int) -> String {
+  case string.length(text) > max {
+    True -> string.trim(string.slice(text, 0, max - 1)) <> "…"
+    False -> text
+  }
 }
 
 fn view_log_entries(entries: List(Entry)) -> Element(Msg) {
