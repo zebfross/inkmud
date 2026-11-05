@@ -31,9 +31,8 @@ export function showScene() {
 }
 
 export function revealLatest() {
-  const feed = document.querySelector(".chronicle-feed");
-  const last = feed && feed.lastElementChild;
-  if (last) last.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  const latest = document.querySelector(".chronicle-latest");
+  if (latest) latest.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
 export function scrollLog() {

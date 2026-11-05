@@ -879,14 +879,15 @@ fn compass_glyph(direction: String) -> String {
   }
 }
 
-/// What just happened. Everything since your last command (its answer, and
-/// anything that has happened since) is shown large; the few entries before
-/// it smaller. Each has its time; the full history is in the journal.
+/// What just happened, newest at the top so it's always in view: your last
+/// command and its answer (large), then the turns before it (smaller). Each
+/// turn reads top to bottom from the command. Each entry has its time; the
+/// full history is in the journal.
 fn view_chronicle(model: Model) -> Element(Msg) {
-  // Newest first: the answer runs back to (not including) your last command.
-  let #(answer, before) = split_at_echo(model.log, [])
-  let answer = list.take(answer, 6)
-  let before = list.take(before, int.max(2, 6 - list.length(answer)))
+  let #(latest, earlier) = case turns(model.log, [], []) {
+    [] -> #([], [])
+    [latest, ..earlier] -> #(latest, list.flatten(earlier) |> list.take(6))
+  }
   html.section([class("card chronicle")], [
     html.div([class("card-head")], [
       html.h2([], [icon("history_edu"), text("Chronicle")]),
@@ -895,26 +896,44 @@ fn view_chronicle(model: Model) -> Element(Msg) {
         icon("chevron_right"),
       ]),
     ]),
-    html.div(
-      [class("chronicle-feed")],
-      list.append(
-        list.reverse(before) |> list.map(view_entry(_, "earlier")),
-        list.reverse(answer) |> list.map(view_entry(_, "latest")),
+    html.div([class("chronicle-feed")], [
+      html.div(
+        [class("chronicle-latest")],
+        list.map(latest, fn(entry) {
+          view_entry(entry, case entry.kind {
+            Echo -> "earlier"
+            _ -> "latest"
+          })
+        }),
       ),
-    ),
+      case earlier {
+        [] -> element.none()
+        _ ->
+          html.div(
+            [class("chronicle-earlier")],
+            list.map(earlier, view_entry(_, "earlier")),
+          )
+      },
+    ]),
   ])
 }
 
-/// Split the newest-first log at the most recent command you typed: what
-/// came after it (newest first), and that command with everything before.
-fn split_at_echo(
+/// The newest-first log as turns, newest turn first: each turn is a command
+/// you typed and what followed it, in the order it happened.
+fn turns(
   log: List(Entry),
-  after: List(Entry),
-) -> #(List(Entry), List(Entry)) {
+  turn: List(Entry),
+  done: List(List(Entry)),
+) -> List(List(Entry)) {
   case log {
-    [] -> #(list.reverse(after), [])
-    [Entry(kind: Echo, ..), ..] -> #(list.reverse(after), log)
-    [entry, ..rest] -> split_at_echo(rest, [entry, ..after])
+    [] ->
+      case turn {
+        [] -> list.reverse(done)
+        _ -> list.reverse([turn, ..done])
+      }
+    [Entry(kind: Echo, ..) as entry, ..rest] ->
+      turns(rest, [], [[entry, ..turn], ..done])
+    [entry, ..rest] -> turns(rest, [entry, ..turn], done)
   }
 }
 
