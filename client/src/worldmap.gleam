@@ -191,13 +191,21 @@ fn project(view: MapView, x: Float, y: Float, z: Int) -> #(Float, Float) {
   )
 }
 
+fn mark_at(view: MapView, mark: #(Int, Int, Int)) -> #(Float, Float) {
+  project(view, int.to_float(mark.0), int.to_float(mark.1), mark.2)
+}
+
 fn at(view: MapView, room: MapRoom) -> #(Float, Float) {
   project(view, int.to_float(room.x), int.to_float(room.y), room.z)
 }
 
 /// The box that fits everything, as #(min_x, min_y, width, height).
 fn base_box(view: MapView) -> #(Float, Float, Float, Float) {
-  let points = list.map(view.rooms, at(view, _))
+  let points =
+    list.append(
+      list.map(view.rooms, at(view, _)),
+      list.map(view.marks, mark_at(view, _)),
+    )
   case points {
     [] -> #(-200.0, -150.0, 400.0, 300.0)
     [#(fx, fy), ..] -> {
@@ -315,8 +323,12 @@ pub fn view(state: State) -> Element(Msg) {
           })
             |> event.prevent_default,
         ],
-        // Bottom floor first, so higher floors are drawn over it.
-        list.flat_map(levels, fn(z) { view_level(state, z) }),
+        // Bottom floor first, so higher floors are drawn over it; treasure
+        // marks on top of everything.
+        list.append(
+          list.flat_map(levels, fn(z) { view_level(state, z) }),
+          list.map(map.marks, fn(m) { view_mark(map, m) }),
+        ),
       ),
       view_card(state),
       html.p([class("map-hint")], [
@@ -575,6 +587,22 @@ fn view_room(state: State, room: MapRoom) -> List(Element(Msg)) {
     False -> []
   }
   list.flatten([stubs, [tile], label])
+}
+
+/// A cross where a treasure map says to dig.
+fn view_mark(map: MapView, mark: #(Int, Int, Int)) -> Element(Msg) {
+  let #(cx, cy) = mark_at(map, mark)
+  svg.g([class("map-mark")], [
+    svg.title([], [text("Where your treasure map says to dig")]),
+    svg.text(
+      [
+        attribute("x", num(cx)),
+        attribute("y", num(cy +. 7.0)),
+        attribute("text-anchor", "middle"),
+      ],
+      "✕",
+    ),
+  ])
 }
 
 fn view_card(state: State) -> Element(Msg) {

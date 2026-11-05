@@ -74,6 +74,12 @@ browser (Lustre) ──websocket──▶ Gleam server
   kept and works on every obstacle of its kind; a cleared obstacle stays
   cleared for everyone. If no tool of a kind is to be had, one is promised
   to a reachable unbuilt place. The crossroads starts with the hooked pole.
+- **Treasure maps.** Beyond the gentle area, a new room sometimes holds a
+  stained treasure map, with a treasure buried at an unbuilt place someone
+  could walk to. Examining the map says roughly where ("about 2 west, 2
+  levels above here") and marks a ✕ on your map; `dig` there with a spade
+  (or crowbar) to unearth it. If nothing to dig with is lying around, a
+  spade is left beside the map. The spade also clears rubble and cave-ins.
 - **Difficulty grows with distance** from the crossroads (each level up or
   down counts double): gentle (0-2) has no dark, locks or obstacles and
   more helpful finds; wary (3-5) and perilous (6+) bring them in. See

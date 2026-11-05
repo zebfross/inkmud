@@ -48,6 +48,21 @@ create table if not exists players (
   name text primary key,
   room_id integer not null references rooms(id)
 );
+create table if not exists caches (
+  x integer not null,
+  y integer not null,
+  z integer not null,
+  name text not null,
+  looks text not null,
+  found integer not null default 0
+);
+create table if not exists map_marks (
+  player text not null,
+  x integer not null,
+  y integer not null,
+  z integer not null,
+  primary key (player, x, y, z)
+);
 create table if not exists pending_items (
   x integer not null,
   y integer not null,
@@ -155,6 +170,7 @@ pub fn wipe_and(store: Store, seed: fn(Store) -> Int) -> Int {
   exec(
     store,
     "begin;
+    delete from caches; delete from map_marks;
     delete from pending_items; delete from closeups; delete from room_debug; delete from visits; delete from items; delete from players; delete from exits;
     delete from rooms; delete from regions;
     delete from sqlite_sequence;
@@ -800,6 +816,8 @@ pub type Examinable {
     name: String,
     /// Plain physical description for the image model.
     looks: String,
+    /// A treasure map: the cell it leads to.
+    leads_to: Option(types.Cell),
   )
 }
 
@@ -830,15 +848,24 @@ pub fn examinable_items(
     use id <- decode.field(0, decode.int)
     use name <- decode.field(1, decode.string)
     use looks <- decode.field(2, decode.string)
+    use unlocks <- decode.field(3, decode.optional(decode.string))
     decode.success(
-      Examinable(key: "item-" <> int.to_string(id), name:, looks: case looks {
-        "" -> name
-        _ -> looks
-      }),
+      Examinable(
+        key: "item-" <> int.to_string(id),
+        name:,
+        looks: case looks {
+          "" -> name
+          _ -> looks
+        },
+        leads_to: case unlocks {
+          Some(code) -> map_target(code) |> option.from_result
+          None -> None
+        },
+      ),
     )
   }
   sqlight.query(
-    "select id, name, looks from items where (room_id = ? or holder = ?) and "
+    "select id, name, looks, unlocks from items where (room_id = ? or holder = ?) and "
       <> takeable()
       <> " order by holder is null desc, id",
     store,
@@ -1351,4 +1378,176 @@ pub fn street_cell_for_light(store: Store) -> Option(types.Cell) {
   })
   |> list.first
   |> option.from_result
+}
+
+// TREASURE --------------------------------------------------------------------
+
+/// Bury a treasure at a cell (built or not) for a map to lead to.
+pub fn add_cache(
+  store: Store,
+  cell: types.Cell,
+  treasure: types.Treasure,
+) -> Nil {
+  let #(x, y, z) = cell
+  let assert Ok(_) =
+    sqlight.query(
+      "insert into caches (x, y, z, name, looks) values (?, ?, ?, ?, ?)",
+      store,
+      [
+        sqlight.int(x),
+        sqlight.int(y),
+        sqlight.int(z),
+        sqlight.text(treasure.name),
+        sqlight.text(treasure.looks),
+      ],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+pub type Dug {
+  /// No spade (or crowbar) to dig with.
+  NothingToDigWith
+  /// Dug, found nothing.
+  OnlyDirt
+  /// Dug up a buried treasure: now carried.
+  Unearthed(name: String)
+}
+
+/// Dig where the player stands.
+pub fn dig(
+  store: Store,
+  player: String,
+  room_id: Int,
+  cell: types.Cell,
+) -> Dug {
+  let #(x, y, z) = cell
+  let tool =
+    sqlight.query(
+      "select name from items where holder = ? and role = 'tool' and unlocks in ("
+        <> types.digging_tools
+      |> list.map(fn(k) { "'" <> k <> "'" })
+      |> string.join(", ")
+        <> ") limit 1",
+      store,
+      [sqlight.text(player)],
+      decode.field(0, decode.string, decode.success),
+    )
+  case tool {
+    Ok([_]) ->
+      case
+        sqlight.query(
+          "select rowid, name, looks from caches where x = ? and y = ? and z = ? and found = 0 limit 1",
+          store,
+          [sqlight.int(x), sqlight.int(y), sqlight.int(z)],
+          {
+            use id <- decode.field(0, decode.int)
+            use name <- decode.field(1, decode.string)
+            use looks <- decode.field(2, decode.string)
+            decode.success(#(id, name, looks))
+          },
+        )
+      {
+        Ok([#(id, name, looks)]) -> {
+          let assert Ok(_) =
+            sqlight.query(
+              "update caches set found = 1 where rowid = ?",
+              store,
+              [sqlight.int(id)],
+              decode.success(Nil),
+            )
+          let assert Ok(_) =
+            sqlight.query(
+              "insert into items (name, holder, role, looks) values (?, ?, 'treasure', ?)",
+              store,
+              [sqlight.text(name), sqlight.text(player), sqlight.text(looks)],
+              decode.success(Nil),
+            )
+          let _ = room_id
+          Unearthed(name)
+        }
+        _ -> OnlyDirt
+      }
+    _ -> NothingToDigWith
+  }
+}
+
+/// A treasure map's cache: its cell, parsed from the map's `unlocks`
+/// ("cache:x,y,z").
+pub fn map_target(unlocks: String) -> Result(types.Cell, Nil) {
+  case string.split(unlocks, ":") {
+    ["cache", coords] ->
+      case list.map(string.split(coords, ","), int.parse) {
+        [Ok(x), Ok(y), Ok(z)] -> Ok(#(x, y, z))
+        _ -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+pub fn map_code(cell: types.Cell) -> String {
+  "cache:"
+  <> int.to_string(cell.0)
+  <> ","
+  <> int.to_string(cell.1)
+  <> ","
+  <> int.to_string(cell.2)
+}
+
+/// Mark a treasure's place on a player's map (from reading its map).
+pub fn add_mark(store: Store, player: String, cell: types.Cell) -> Nil {
+  let #(x, y, z) = cell
+  let assert Ok(_) =
+    sqlight.query(
+      "insert or ignore into map_marks (player, x, y, z) values (?, ?, ?, ?)",
+      store,
+      [sqlight.text(player), sqlight.int(x), sqlight.int(y), sqlight.int(z)],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+/// A player's marks for treasure not yet dug up.
+pub fn marks(store: Store, player: String) -> List(types.Cell) {
+  sqlight.query(
+    "select m.x, m.y, m.z from map_marks m where m.player = ?
+     and exists (select 1 from caches c where c.x = m.x and c.y = m.y and c.z = m.z and c.found = 0)",
+    store,
+    [sqlight.text(player)],
+    {
+      use x <- decode.field(0, decode.int)
+      use y <- decode.field(1, decode.int)
+      use z <- decode.field(2, decode.int)
+      decode.success(#(x, y, z))
+    },
+  )
+  |> result.unwrap([])
+}
+
+/// Unbuilt cells a player could reach by walking: beyond an open way out
+/// (unlocked, unblocked) of a built room. Where a map's treasure can go.
+pub fn reachable_unbuilt(store: Store) -> List(types.Cell) {
+  sqlight.query(
+    "select r.x, r.y, r.z, e.direction from exits e join rooms r on r.id = e.room_id
+     where e.target_id is null and e.lock_id is null and e.obstacle_kind is null",
+    store,
+    [],
+    {
+      use x <- decode.field(0, decode.int)
+      use y <- decode.field(1, decode.int)
+      use z <- decode.field(2, decode.int)
+      use d <- decode.field(3, decode.string)
+      decode.success(#(#(x, y, z), d))
+    },
+  )
+  |> result.unwrap([])
+  |> list.filter_map(fn(row) {
+    use d <- result.try(types.parse_direction(row.1))
+    let cell = types.step(row.0, d)
+    case room_at(store, cell) {
+      None -> Ok(cell)
+      Some(_) -> Error(Nil)
+    }
+  })
+  |> list.unique
 }

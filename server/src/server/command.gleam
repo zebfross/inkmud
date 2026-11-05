@@ -16,6 +16,8 @@ pub type Command {
   Inventory
   /// Pour oil into a lantern.
   Refill
+  /// Dig where you stand (for buried treasure).
+  Dig
   Say(String)
   Help
   Unknown(String)
@@ -64,6 +66,7 @@ pub fn parse(input: String) -> Command {
         "drop", thing if thing != "" -> Drop(strip_prefix(thing, ["the "]))
         "i", "" | "inv", "" | "inventory", "" -> Inventory
         "fill", _ | "refill", _ | "refuel", _ -> Refill
+        "dig", _ -> Dig
         "use", "oil" | "pour", "oil" | "use", "lamp oil" | "pour", "lamp oil" ->
           Refill
         "help", "" | "?", "" -> Help
@@ -114,10 +117,11 @@ pub fn describe(command: Command) -> String {
     Drop(t) -> "drop " <> t
     Inventory -> "inventory"
     Refill -> "fill lantern"
+    Dig -> "dig"
     Say(w) -> "say " <> w
     Help -> "help"
     Unknown(t) -> t
   }
 }
 
-pub const help_text = "Commands: north/south/east/west/up/down (or n/s/e/w/u/d), look, look <direction>, examine <thing>, take <item>, drop <item>, inventory (i), fill lantern, say <words> (or 'words), help. You can also just type what you want to do."
+pub const help_text = "Commands: north/south/east/west/up/down (or n/s/e/w/u/d), look, look <direction>, examine <thing>, take <item>, drop <item>, inventory (i), fill lantern, dig, say <words> (or 'words), help. You can also just type what you want to do."

@@ -388,6 +388,47 @@ fn run(session: Session, cmd: Command, interpreted: Bool, conn) -> Session {
       }
       session
     }
+    command.Dig -> {
+      case store.load_room(session.deps.store, session.room_id) {
+        Ok(here) ->
+          case here.dark && !store.has_light(session.deps.store, name) {
+            True -> system(conn, "It's too dark to dig.")
+            False ->
+              case
+                store.dig(session.deps.store, name, here.id, types.cell(here))
+              {
+                store.NothingToDigWith ->
+                  system(conn, "You'd need a spade (or a crowbar) to dig with.")
+                store.OnlyDirt ->
+                  send(
+                    conn,
+                    Line(
+                      Narration,
+                      "You dig for a while but turn up only dirt and stones.",
+                    ),
+                  )
+                store.Unearthed(treasure) -> {
+                  send(
+                    conn,
+                    Line(
+                      Narration,
+                      "Your blade strikes something hard. You scrape away the earth and lift out the "
+                        <> treasure
+                        <> "!",
+                    ),
+                  )
+                  send(
+                    conn,
+                    protocol.Inventory(store.inventory(session.deps.store, name)),
+                  )
+                  tell_room(room.Say(name, "Found it!"))
+                }
+              }
+          }
+        Error(Nil) -> Nil
+      }
+      session
+    }
     command.Help -> {
       system(conn, command.help_text)
       session
@@ -417,6 +458,22 @@ fn run(session: Session, cmd: Command, interpreted: Bool, conn) -> Session {
             art.closeup(deps.art, deps.store, room_data, found, fn(url) {
               process.send(self, Out(protocol.Closeup(found.name, url)))
             })
+            // Reading a treasure map marks the spot on your own map.
+            case found.leads_to {
+              Some(spot) -> {
+                store.add_mark(deps.store, name, spot)
+                process.send(
+                  self,
+                  Out(Line(
+                    System,
+                    "You mark the inked cross on your map: it lies "
+                      <> types.bearing(types.cell(room_data), spot)
+                      <> ". (Open your map to see it, then dig there.)",
+                  )),
+                )
+              }
+              None -> Nil
+            }
           }
           False, None ->
             process.send(
@@ -579,7 +636,7 @@ fn interpret(
 ) -> Result(String, Nil) {
   let prompt =
     "You translate a player's input in a text adventure into ONE game command.\n"
-    <> "Allowed commands: go north | go south | go east | go west | go up | go down | fill lantern | look | look <north/south/east/west/up/down> | examine <thing> | take <item> | drop <item> | inventory | say <words> | help\n\n"
+    <> "Allowed commands: go north | go south | go east | go west | go up | go down | fill lantern | dig | look | look <north/south/east/west/up/down> | examine <thing> | take <item> | drop <item> | inventory | say <words> | help\n\n"
     <> context(room_data, inventory)
     <> "\n\nPlayer input: \""
     <> text
@@ -643,6 +700,7 @@ fn map_view(deps: Deps, name: String, current: Int) -> protocol.MapView {
   let placed = list.map(rooms, fn(r) { map.Placed(r, r.x, r.y, r.z) })
   protocol.MapView(
     current:,
+    marks: store.marks(deps.store, name),
     rooms: list.map(placed, fn(p) {
       protocol.MapRoom(
         id: p.room.id,

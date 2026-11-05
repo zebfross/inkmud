@@ -49,15 +49,15 @@ pub fn tier_name(tier: Int) -> String {
 
 /// Percent chances for a new room at each difficulty.
 pub type Odds {
-  Odds(dark: Int, obstacle: Int, lock: Int, gift: Int)
+  Odds(dark: Int, obstacle: Int, lock: Int, gift: Int, map: Int)
 }
 
 pub fn odds(tier: Int) -> Odds {
   case tier {
     // Near the crossroads: nothing in the way, and things worth finding.
-    0 -> Odds(dark: 0, obstacle: 0, lock: 0, gift: 30)
-    1 -> Odds(dark: 25, obstacle: 20, lock: 15, gift: 15)
-    _ -> Odds(dark: 45, obstacle: 25, lock: 30, gift: 10)
+    0 -> Odds(dark: 0, obstacle: 0, lock: 0, gift: 30, map: 0)
+    1 -> Odds(dark: 25, obstacle: 20, lock: 15, gift: 15, map: 10)
+    _ -> Odds(dark: 45, obstacle: 25, lock: 30, gift: 10, map: 12)
   }
 }
 
@@ -90,6 +90,64 @@ fn helpful_find(store: Store) -> Option(store.Pending) {
       list.drop(options, int.random(list.length(options)))
       |> list.first
       |> option.from_result
+  }
+}
+
+/// Bury a treasure somewhere a player could walk to (an unbuilt place
+/// beyond an open way out, 2 to 8 steps from here; else nowhere, and no
+/// map), and return the map that leads to it, plus a spade if there's
+/// nothing to dig with lying around. With a note for the developer view.
+fn bury_treasure(
+  store: Store,
+  here: types.Cell,
+) -> #(List(store.Pending), String) {
+  let spots =
+    store.reachable_unbuilt(store)
+    |> list.filter(fn(c) {
+      let d = distance(#(c.0 - here.0, c.1 - here.1, c.2 - here.2))
+      c != here && d >= 2 && d <= 8
+    })
+  case spots {
+    [] -> #([], "")
+    _ -> {
+      let assert Ok(spot) =
+        list.drop(spots, int.random(list.length(spots))) |> list.first
+      let assert Ok(treasure) =
+        list.drop(types.treasures, int.random(list.length(types.treasures)))
+        |> list.first
+      store.add_cache(store, spot, treasure)
+      let map =
+        store.Pending(
+          name: "stained treasure map",
+          looks: "a stained, hand-drawn map of the city streets with a small inked cross",
+          role: "map",
+          unlocks: Some(store.map_code(spot)),
+        )
+      let can_dig =
+        list.any(types.digging_tools, fn(k) { store.free_tools(store, k) > 0 })
+      let spade = case can_dig, types.tool_kind("spade") {
+        False, Ok(k) -> [
+          store.Pending(
+            name: k.name,
+            looks: k.looks,
+            role: "tool",
+            unlocks: Some("spade"),
+          ),
+        ]
+        _, _ -> []
+      }
+      #(
+        [map, ..spade],
+        "used: a treasure map; "
+          <> treasure.name
+          <> " is buried at "
+          <> cell_text(spot)
+          <> case spade {
+          [] -> ""
+          _ -> ", with a spade left beside the map"
+        },
+      )
+    }
   }
 }
 
@@ -245,7 +303,14 @@ fn invent(
     True -> option.values([helpful_find(store)])
     False -> []
   }
-  let required = list.append(store.pending_at(store, target), gift)
+  // Now and then a treasure map (and, if nothing to dig with is about, a
+  // spade to go with it).
+  let #(treasure_map, map_note) = case int.random(100) < odds.map {
+    True -> bury_treasure(store, target)
+    False -> #([], "")
+  }
+  let required =
+    list.flatten([store.pending_at(store, target), gift, treasure_map])
   let want_lock = int.random(100) < odds.lock
   let prompt =
     prompt(
@@ -409,6 +474,7 @@ fn invent(
           build_log,
           [
             "difficulty: " <> tier_name(tier),
+            map_note,
             lock_note,
             obstacle_note,
             dark_note,
@@ -603,6 +669,7 @@ fn describe_obstacle(
   let fallback = case kind.kind {
     "crowbar" -> "a rusted iron grate, its hinges seized"
     "rope" -> "a sheer drop where the stairs have fallen away"
+    "spade" -> "a heap of fallen rubble and earth choking the way"
     _ -> "a ladder pulled up well out of reach"
   }
   // It has to be something this tool deals with (one model reply was "a
@@ -655,6 +722,10 @@ pub fn obstacle_words(kind: String) -> List(String) {
       "collapsed",
       "fallen away",
       "climb",
+    ]
+    "spade" -> [
+      "rubble", "earth", "cave-in", "caved", "silt", "mud", "heap",
+      "fallen stone", "landslide", "buried",
     ]
     _ -> [
       "ladder",

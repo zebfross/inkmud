@@ -118,7 +118,13 @@ pub type MapRoom {
 }
 
 pub type MapView {
-  MapView(rooms: List(MapRoom), links: List(#(Int, Int)), current: Int)
+  MapView(
+    rooms: List(MapRoom),
+    links: List(#(Int, Int)),
+    current: Int,
+    /// Where the player's treasure maps say to dig (x, y, z).
+    marks: List(#(Int, Int, Int)),
+  )
 }
 
 /// Dev only: everything that went into a room, for debugging mismatches
@@ -243,6 +249,10 @@ pub fn encode_server(msg: ServerMsg) -> String {
         #(
           "links",
           json.array(view.links, fn(l) { json.array([l.0, l.1], json.int) }),
+        ),
+        #(
+          "marks",
+          json.array(view.marks, fn(m) { json.array([m.0, m.1, m.2], json.int) }),
         ),
       ])
     Room(view) ->
@@ -452,7 +462,15 @@ pub fn decode_server(text: String) -> Result(ServerMsg, Nil) {
         use current <- decode.field("current", decode.int)
         use rooms <- decode.field("rooms", decode.list(map_room))
         use links <- decode.field("links", decode.list(link))
-        decode.success(Map(MapView(rooms:, links:, current:)))
+        let mark = {
+          use xyz <- decode.then(decode.list(decode.int))
+          case xyz {
+            [x, y, z] -> decode.success(#(x, y, z))
+            _ -> decode.failure(#(0, 0, 0), "mark")
+          }
+        }
+        use marks <- decode.optional_field("marks", [], decode.list(mark))
+        decode.success(Map(MapView(rooms:, links:, current:, marks:)))
       }
       "name_taken" -> {
         use name <- decode.field("name", decode.string)

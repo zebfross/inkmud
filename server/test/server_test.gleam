@@ -265,7 +265,12 @@ pub fn closeup_prompt_test() {
   // The thing alone and large; the room only as a blurred hint.
   let room = types.Room(..room_with(1, []), name: "The Quay")
   let key =
-    store.Examinable("item-7", "brass key", "a small tarnished brass key.")
+    store.Examinable(
+      "item-7",
+      "brass key",
+      "a small tarnished brass key.",
+      None,
+    )
   assert art.closeup_prompt(room, key)
     == art.style
     <> ". Close-up of a small tarnished brass key, centered, filling the frame, finely detailed. Softly blurred background: The Quay."
@@ -472,7 +477,7 @@ pub fn difficulty_test() {
   assert builder.tier(#(2, 2, -1)) == 2
   // Gentle places have nothing in the way.
   assert builder.odds(0)
-    == builder.Odds(dark: 0, obstacle: 0, lock: 0, gift: 30)
+    == builder.Odds(dark: 0, obstacle: 0, lock: 0, gift: 30, map: 0)
 }
 
 pub fn obstacle_words_test() {
@@ -483,4 +488,45 @@ pub fn obstacle_words_test() {
   assert !fits("crowbar", "a decrepit, oil-stained wooden wheel")
   assert fits("rope", "a sheer drop where the stairs have fallen away")
   assert fits("pole", "a ladder pulled up well out of reach")
+}
+
+pub fn treasure_test() {
+  let db = store.open(":memory:")
+  let start = seed.run(db)
+  store.add_cache(db, #(0, 0, 0), types.Treasure("guild ring", "a gold ring"))
+  // Nothing to dig with yet (the crossroads' pole doesn't dig).
+  let assert Ok(_) = store.take_item(db, start, "Ada", "hooked pole")
+  assert store.dig(db, "Ada", start, #(0, 0, 0)) == store.NothingToDigWith
+  // With a spade: wrong spot is dirt, the right one the treasure, once.
+  let assert Ok(shed) =
+    store.insert_room(
+      db,
+      "lantern_ward",
+      "Shed",
+      "A shed.",
+      [],
+      ["spade"],
+      [],
+      #(0, 1, 0),
+    )
+  store.set_item_role(db, shed, "spade", "tool", Some("spade"))
+  let assert Ok(_) = store.take_item(db, shed, "Ada", "spade")
+  assert store.dig(db, "Ada", shed, #(0, 1, 0)) == store.OnlyDirt
+  store.add_mark(db, "Ada", #(0, 0, 0))
+  assert store.marks(db, "Ada") == [#(0, 0, 0)]
+  assert store.dig(db, "Ada", start, #(0, 0, 0))
+    == store.Unearthed("guild ring")
+  assert list.contains(store.inventory(db, "Ada"), "guild ring")
+  assert store.dig(db, "Ada", start, #(0, 0, 0)) == store.OnlyDirt
+  // Found: no longer marked.
+  assert store.marks(db, "Ada") == []
+}
+
+pub fn bearing_and_map_code_test() {
+  assert types.bearing(#(0, 0, 0), #(2, -3, -1))
+    == "about 3 north and 2 east, one level below here"
+  assert types.bearing(#(1, 1, 0), #(1, 1, 0)) == "right here"
+  assert types.bearing(#(0, 0, 0), #(-1, 0, 0)) == "about 1 west of here"
+  assert store.map_target(store.map_code(#(3, -2, -1))) == Ok(#(3, -2, -1))
+  assert store.map_target("lock-4-north") == Error(Nil)
 }

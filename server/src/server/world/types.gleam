@@ -1,6 +1,7 @@
 //// The world's canonical data. Everything here lives in the database; the
 //// models only ever propose new instances of it, never edit it freely.
 
+import gleam/int
 import gleam/list
 import gleam/option.{type Option}
 import gleam/string
@@ -64,6 +65,14 @@ pub const tool_kinds = [
     obstacles: "something you'd need a rope to get past: a sheer drop, broken stairs, a high ledge",
     needs: "You'd need a rope to get past.",
     clears: "You make the coil of rope fast and climb past; you leave a knotted line behind for others.",
+  ),
+  ToolKind(
+    kind: "spade",
+    name: "iron-bladed spade",
+    looks: "a short spade with an iron blade and a worn ash handle",
+    obstacles: "something you'd have to dig through: a heap of fallen rubble, a cave-in of earth and stone, a doorway silted up with mud",
+    needs: "You'd need something to dig through it.",
+    clears: "You dig a way through with the iron-bladed spade; the passage stays clear.",
   ),
   ToolKind(
     kind: "pole",
@@ -139,7 +148,7 @@ pub const all_directions = [North, South, East, West, Up, Down]
 /// Roles an item can have that the game actually does something with. Only
 /// these can be picked up (and examined); add one as its mechanic is built.
 /// Older items without one of these are scenery.
-pub const takeable_roles = ["key", "light", "fuel", "tool"]
+pub const takeable_roles = ["key", "light", "fuel", "tool", "map", "treasure"]
 
 /// Oil a new lantern holds, and what a tin of oil adds: one unit is used
 /// for each step into (or within) a dark place.
@@ -224,5 +233,78 @@ pub fn obstructed(obstacle: Obstacle) -> String {
   case says_it {
     True -> sentence <> ". " <> needs
     False -> sentence <> " blocks the way. " <> needs
+  }
+}
+
+/// What a treasure map leads to: things worth finding in Vellmoor.
+pub type Treasure {
+  Treasure(name: String, looks: String)
+}
+
+pub const treasures = [
+  Treasure(
+    "lamplighter's guild ring",
+    "a heavy gold signet ring stamped with a lamp",
+  ),
+  Treasure(
+    "silver pocket watch",
+    "an engraved silver pocket watch on a broken chain",
+  ),
+  Treasure(
+    "string of river pearls",
+    "a string of grey river pearls with a silver clasp",
+  ),
+  Treasure(
+    "purse of old sovereigns",
+    "a small leather purse heavy with gold coins",
+  ),
+  Treasure("jet mourning brooch", "a black jet brooch set in silver"),
+  Treasure(
+    "bell-founder's medal",
+    "a bronze medal stamped with a bell and a date",
+  ),
+  Treasure(
+    "smuggler's silver flask",
+    "a dented silver hip flask engraved with a ship",
+  ),
+  Treasure(
+    "cathedral reliquary",
+    "a small gilt reliquary box with a cracked crystal lid",
+  ),
+]
+
+/// Tool kinds that can dig up a cache.
+pub const digging_tools = ["spade", "crowbar"]
+
+/// Roughly where a cell is from another, in words: "about 3 streets north
+/// and 2 east, one level below here".
+pub fn bearing(from: Cell, to: Cell) -> String {
+  let #(dx, dy, dz) = #(to.0 - from.0, to.1 - from.1, to.2 - from.2)
+  let streets = fn(n: Int, plus: String, minus: String) {
+    case n {
+      0 -> []
+      _ if n > 0 -> [int.to_string(n) <> " " <> plus]
+      _ -> [int.to_string(-n) <> " " <> minus]
+    }
+  }
+  let across =
+    list.append(streets(dy, "south", "north"), streets(dx, "east", "west"))
+  let level = case dz {
+    0 -> []
+    1 -> ["one level above"]
+    -1 -> ["one level below"]
+    _ if dz > 0 -> [int.to_string(dz) <> " levels above"]
+    _ -> [int.to_string(-dz) <> " levels below"]
+  }
+  case across, level {
+    [], [] -> "right here"
+    [], _ -> string.join(level, "") <> " here"
+    _, [] -> "about " <> string.join(across, " and ") <> " of here"
+    _, _ ->
+      "about "
+      <> string.join(across, " and ")
+      <> ", "
+      <> string.join(level, "")
+      <> " here"
   }
 }
