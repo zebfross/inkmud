@@ -22,7 +22,61 @@ pub type Exit {
     /// Locked: what bars the way ("an iron gate with a raven-shaped
     /// keyhole"). Opened for good by the one key made for it.
     lock: Option(String),
+    /// Blocked by something a tool gets you past (a rusted grate, a sheer
+    /// drop). Cleared for good by anyone carrying a tool of its kind.
+    obstacle: Option(Obstacle),
   )
+}
+
+pub type Obstacle {
+  Obstacle(kind: String, desc: String)
+}
+
+/// A kind of tool, and the obstacles it gets you past.
+pub type ToolKind {
+  ToolKind(
+    kind: String,
+    /// The tool itself, as placed in the world.
+    name: String,
+    looks: String,
+    /// What blocks you, for the model to describe one of ("a rusted grate").
+    obstacles: String,
+    /// Said when you don't have it.
+    needs: String,
+    /// Said when you use it ("You lever it open with the iron crowbar.").
+    clears: String,
+  )
+}
+
+pub const tool_kinds = [
+  ToolKind(
+    kind: "crowbar",
+    name: "iron crowbar",
+    looks: "a heavy iron crowbar, flattened at one end",
+    obstacles: "something that has to be pried open: a rusted grate, boards nailed across the way, a stuck hatch",
+    needs: "You'd need something to pry it open.",
+    clears: "You lever it open with the iron crowbar; it stays open.",
+  ),
+  ToolKind(
+    kind: "rope",
+    name: "coil of rope",
+    looks: "a coil of thick hemp rope",
+    obstacles: "something you'd need a rope to get past: a sheer drop, broken stairs, a high ledge",
+    needs: "You'd need a rope to get past.",
+    clears: "You make the coil of rope fast and climb past; you leave a knotted line behind for others.",
+  ),
+  ToolKind(
+    kind: "pole",
+    name: "lamplighter's hooked pole",
+    looks: "a long wooden pole with an iron hook at its tip",
+    obstacles: "something just out of reach that a long hooked pole could bring down: a ladder pulled up, a hatch high overhead, a drawbridge raised",
+    needs: "You'd need something long to reach it.",
+    clears: "You catch it with the lamplighter's hooked pole and pull it within reach; it stays down.",
+  ),
+]
+
+pub fn tool_kind(kind: String) -> Result(ToolKind, Nil) {
+  list.find(tool_kinds, fn(t) { t.kind == kind })
 }
 
 pub type Room {
@@ -85,7 +139,7 @@ pub const all_directions = [North, South, East, West, Up, Down]
 /// Roles an item can have that the game actually does something with. Only
 /// these can be picked up (and examined); add one as its mechanic is built.
 /// Older items without one of these are scenery.
-pub const takeable_roles = ["key", "light", "fuel"]
+pub const takeable_roles = ["key", "light", "fuel", "tool"]
 
 /// Oil a new lantern holds, and what a tin of oil adds: one unit is used
 /// for each step into (or within) a dark place.
@@ -147,5 +201,28 @@ pub fn barred(lock: String) -> String {
   case says_it {
     True -> sentence <> ". It's locked."
     False -> sentence <> " bars the way. It's locked."
+  }
+}
+
+/// "A rusted grate blocks the way. You'd need something to pry it open."
+pub fn obstructed(obstacle: Obstacle) -> String {
+  let desc = string.trim(obstacle.desc)
+  let desc = case string.ends_with(desc, ".") {
+    True -> string.drop_end(desc, 1)
+    False -> desc
+  }
+  let sentence =
+    string.uppercase(string.slice(desc, 0, 1)) <> string.drop_start(desc, 1)
+  let says_it =
+    list.any(["bar", "block", "seal"], fn(w) {
+      string.contains(string.lowercase(desc), " " <> w)
+    })
+  let needs = case tool_kind(obstacle.kind) {
+    Ok(kind) -> kind.needs
+    Error(Nil) -> "You'd need something to get past it."
+  }
+  case says_it {
+    True -> sentence <> ". " <> needs
+    False -> sentence <> " blocks the way. " <> needs
   }
 }

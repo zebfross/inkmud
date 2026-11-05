@@ -72,8 +72,14 @@ pub fn decode_client(text: String) -> Result(ClientMsg, Nil) {
 // SERVER → CLIENT -------------------------------------------------------------
 
 pub type ExitView {
-  /// `lock`: what bars it, if it's locked.
-  ExitView(direction: String, hint: String, lock: Option(String))
+  /// `lock`: what bars it, if it's locked. `obstacle`: what blocks it and
+  /// what you'd need, if a tool gets you past.
+  ExitView(
+    direction: String,
+    hint: String,
+    lock: Option(String),
+    obstacle: Option(String),
+  )
 }
 
 pub type RoomView {
@@ -283,6 +289,7 @@ fn room_json(view: RoomView) -> Json {
           #("direction", json.string(e.direction)),
           #("hint", json.string(e.hint)),
           #("lock", json.nullable(e.lock, json.string)),
+          #("obstacle", json.nullable(e.obstacle, json.string)),
         ])
       }),
     ),
@@ -320,7 +327,12 @@ fn room_decoder() -> Decoder(RoomView) {
       None,
       decode.optional(decode.string),
     )
-    decode.success(ExitView(direction:, hint:, lock:))
+    use obstacle <- decode.optional_field(
+      "obstacle",
+      None,
+      decode.optional(decode.string),
+    )
+    decode.success(ExitView(direction:, hint:, lock:, obstacle:))
   }
   use id <- decode.field("id", decode.int)
   use region <- decode.field("region", decode.string)

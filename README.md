@@ -68,6 +68,16 @@ browser (Lustre) ──websocket──▶ Gleam server
   reachable without that lock (beyond another of the room's ways out, or
   the previous room's), and whichever way that place is built, it contains
   the key. A key opens its lock for everyone and stays in it.
+- **Tools and obstacles.** Three tools (iron crowbar, coil of rope,
+  lamplighter's hooked pole), each getting you past its kind of obstacle (a
+  rusted grate, a sheer drop, a ladder pulled up out of reach). A tool is
+  kept and works on every obstacle of its kind; a cleared obstacle stays
+  cleared for everyone. If no tool of a kind is to be had, one is promised
+  to a reachable unbuilt place. The crossroads starts with the hooked pole.
+- **Difficulty grows with distance** from the crossroads (each level up or
+  down counts double): gentle (0-2) has no dark, locks or obstacles and
+  more helpful finds; wary (3-5) and perilous (6+) bring them in. See
+  `builder.odds`.
 - **Light and dark.** Some places below the streets are pitch dark: without
   a lit lantern you see no description, picture or items, and can only feel
   your way toward somewhere lit. A lantern burns one unit of oil per step

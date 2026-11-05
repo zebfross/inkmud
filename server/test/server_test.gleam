@@ -1,6 +1,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import gleeunit
 import server/art
 import server/command.{
@@ -84,9 +85,10 @@ pub fn look_toward_wording_test() {
       "x",
       None,
       None,
+      None,
     ),
-    Exit(Down, "An iron grate breathes warm air.", "x", None, None),
-    Exit(West, "back toward The Lantern Crossroads", "x", Some(1), None),
+    Exit(Down, "An iron grate breathes warm air.", "x", None, None, None),
+    Exit(West, "back toward The Lantern Crossroads", "x", Some(1), None, None),
   ]
   assert room.look_toward(exits, North)
     == "To the north, worn stone stairs climb toward a broken bell tower."
@@ -119,7 +121,7 @@ fn room_with(id: Int, exits: List(#(types.Direction, Int))) -> types.Room {
     description: "",
     features: [],
     items: [],
-    exits: list.map(exits, fn(e) { Exit(e.0, "", "r", Some(e.1), None) }),
+    exits: list.map(exits, fn(e) { Exit(e.0, "", "r", Some(e.1), None, None) }),
     art_url: None,
     picture: "",
     x: 0,
@@ -384,8 +386,9 @@ pub fn only_takeable_roles_test() {
   assert store.room_items(db, room) == ["brass key"]
   assert store.take_item(db, room, "Ada", "old spoon") == Error(Nil)
   assert store.take_item(db, room, "Ada", "brass key") == Ok("brass key")
-  // The seed room's pole and oil tin are scenery now.
-  assert store.room_items(db, 1) == []
+  // The seed room's pole is a tool and its oil tin fuel: both takeable.
+  assert store.room_items(db, 1)
+    == ["lamplighter's hooked pole", "tin of lamp oil"]
 }
 
 pub fn lantern_and_oil_test() {
@@ -433,4 +436,51 @@ pub fn light_is_promised_at_street_level_test() {
   // (down leads below it): a light goes beyond one of those.
   let assert Some(#(_, _, z)) = store.street_cell_for_light(db)
   assert z == 0
+}
+
+pub fn obstacle_and_tool_test() {
+  let db = store.open(":memory:")
+  let start = seed.run(db)
+  store.set_obstacle(
+    db,
+    start,
+    West,
+    types.Obstacle("pole", "a ladder pulled up out of reach"),
+  )
+  // Without a pole: blocked, and told what's needed.
+  let assert store.Obstructed(o) = store.pass(db, "Ada", start, West)
+  assert types.obstructed(o)
+    == "A ladder pulled up out of reach blocks the way. You'd need something long to reach it."
+  // The crossroads' own hooked pole is the tool; one is free until taken.
+  assert store.free_tools(db, "pole") == 1
+  let assert Ok(_) = store.take_item(db, start, "Ada", "hooked pole")
+  assert store.free_tools(db, "pole") == 0
+  let assert store.Cleared(tool: "lamplighter's hooked pole", ..) =
+    store.pass(db, "Ada", start, West)
+  // Cleared for everyone; the tool is kept.
+  assert store.pass(db, "Bram", start, West) == store.Open
+  assert store.inventory(db, "Ada") == ["lamplighter's hooked pole"]
+}
+
+pub fn difficulty_test() {
+  // Near the crossroads is gentle; underground counts double.
+  assert builder.tier(#(0, 0, 0)) == 0
+  assert builder.tier(#(1, -1, 0)) == 0
+  assert builder.tier(#(0, 0, -1)) == 0
+  assert builder.tier(#(1, 0, -1)) == 1
+  assert builder.tier(#(3, 2, 0)) == 1
+  assert builder.tier(#(2, 2, -1)) == 2
+  // Gentle places have nothing in the way.
+  assert builder.odds(0)
+    == builder.Odds(dark: 0, obstacle: 0, lock: 0, gift: 30)
+}
+
+pub fn obstacle_words_test() {
+  let fits = fn(kind, desc) {
+    builder.obstacle_words(kind) |> list.any(string.contains(desc, _))
+  }
+  assert fits("crowbar", "a rusted iron grate, its hinges seized")
+  assert !fits("crowbar", "a decrepit, oil-stained wooden wheel")
+  assert fits("rope", "a sheer drop where the stairs have fallen away")
+  assert fits("pole", "a ladder pulled up well out of reach")
 }

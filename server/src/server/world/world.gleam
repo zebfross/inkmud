@@ -351,6 +351,23 @@ fn through_lock(
       }
       traverse(state, room_id, direction, reply)
     }
+    store.Obstructed(obstacle) -> {
+      reply(Blocked(types.obstructed(obstacle)))
+      actor.continue(state)
+    }
+    store.Cleared(tool: _, obstacle:) -> {
+      reply(
+        Opened(case types.tool_kind(obstacle.kind) {
+          Ok(kind) -> kind.clears
+          Error(Nil) -> "You get past it."
+        }),
+      )
+      case dict.get(state.rooms, room_id) {
+        Ok(r) -> process.send(r, room.Refresh)
+        Error(Nil) -> Nil
+      }
+      traverse(state, room_id, direction, reply)
+    }
     store.Open -> traverse(state, room_id, direction, reply)
   }
 }

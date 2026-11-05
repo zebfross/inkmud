@@ -101,6 +101,9 @@ pub fn open(path: String) -> Store {
     #("items", "charge", "integer not null default 0"),
     #("exits", "lock_id", "text"),
     #("exits", "lock_desc", "text"),
+    // Blocked by an obstacle a tool of `obstacle_kind` gets you past.
+    #("exits", "obstacle_kind", "text"),
+    #("exits", "obstacle_desc", "text"),
   ]
   |> list.each(fn(column) {
     let #(table, name, kind) = column
@@ -362,10 +365,16 @@ fn exits(store: Store, room_id: Int) -> List(Exit) {
     use target_region <- decode.field(2, decode.string)
     use target <- decode.field(3, decode.optional(decode.int))
     use lock <- decode.field(4, decode.optional(decode.string))
-    decode.success(#(direction, hint, target_region, target, lock))
+    use obstacle_kind <- decode.field(5, decode.optional(decode.string))
+    use obstacle_desc <- decode.field(6, decode.optional(decode.string))
+    let obstacle = case obstacle_kind, obstacle_desc {
+      Some(kind), Some(desc) -> Some(types.Obstacle(kind:, desc:))
+      _, _ -> None
+    }
+    decode.success(#(direction, hint, target_region, target, #(lock, obstacle)))
   }
   sqlight.query(
-    "select direction, hint, target_region, target_id, lock_desc from exits where room_id = ?",
+    "select direction, hint, target_region, target_id, lock_desc, obstacle_kind, obstacle_desc from exits where room_id = ?",
     store,
     [sqlight.int(room_id)],
     decoder,
@@ -378,7 +387,8 @@ fn exits(store: Store, room_id: Int) -> List(Exit) {
       hint: row.1,
       target_region: row.2,
       target: row.3,
-      lock: row.4,
+      lock: row.4.0,
+      obstacle: row.4.1,
     )
   })
 }
@@ -878,6 +888,11 @@ pub type Passage {
   /// They carried the key: it's left in the lock, which is now open for
   /// everyone. The key's name and the lock's description, for the telling.
   Unlocked(key: String, lock: String)
+  /// An obstacle, and they carry no tool of its kind.
+  Obstructed(obstacle: types.Obstacle)
+  /// They carried a tool of the obstacle's kind: it's cleared for everyone
+  /// (the tool is kept).
+  Cleared(tool: String, obstacle: types.Obstacle)
 }
 
 /// Lock an exit (when its room is built). `lock_id` is what its key opens.
@@ -955,8 +970,100 @@ pub fn pass(
         }
         _ -> Barred(desc)
       }
+    _ -> past_obstacle(store, player, room_id, d)
+  }
+}
+
+/// No lock (or it was opened): is there an obstacle, and can they clear it?
+fn past_obstacle(
+  store: Store,
+  player: String,
+  room_id: Int,
+  d: types.Direction,
+) -> Passage {
+  let obstacle =
+    sqlight.query(
+      "select obstacle_kind, obstacle_desc from exits where room_id = ? and direction = ? and obstacle_kind is not null",
+      store,
+      [sqlight.int(room_id), sqlight.text(types.direction_name(d))],
+      {
+        use kind <- decode.field(0, decode.string)
+        use desc <- decode.field(1, decode.optional(decode.string))
+        decode.success(types.Obstacle(
+          kind:,
+          desc: option.unwrap(desc, "something"),
+        ))
+      },
+    )
+  case obstacle {
+    Ok([o]) ->
+      case
+        sqlight.query(
+          "select name from items where holder = ? and role = 'tool' and unlocks = ? limit 1",
+          store,
+          [sqlight.text(player), sqlight.text(o.kind)],
+          decode.field(0, decode.string, decode.success),
+        )
+      {
+        Ok([tool]) -> {
+          let assert Ok(_) =
+            sqlight.query(
+              "update exits set obstacle_kind = null, obstacle_desc = null where room_id = ? and direction = ?",
+              store,
+              [sqlight.int(room_id), sqlight.text(types.direction_name(d))],
+              decode.success(Nil),
+            )
+          Cleared(tool:, obstacle: o)
+        }
+        _ -> Obstructed(o)
+      }
     _ -> Open
   }
+}
+
+/// Block an exit with an obstacle of a tool kind.
+pub fn set_obstacle(
+  store: Store,
+  room_id: Int,
+  d: types.Direction,
+  obstacle: types.Obstacle,
+) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "update exits set obstacle_kind = ?, obstacle_desc = ? where room_id = ? and direction = ?",
+      store,
+      [
+        sqlight.text(obstacle.kind),
+        sqlight.text(obstacle.desc),
+        sqlight.int(room_id),
+        sqlight.text(types.direction_name(d)),
+      ],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+/// Tools of a kind nobody is carrying: lying in a room, or promised.
+pub fn free_tools(store: Store, kind: String) -> Int {
+  let count = fn(sql) {
+    case
+      sqlight.query(
+        sql,
+        store,
+        [sqlight.text(kind)],
+        decode.field(0, decode.int, decode.success),
+      )
+    {
+      Ok([n]) -> n
+      _ -> 0
+    }
+  }
+  count(
+    "select count(*) from items where role = 'tool' and unlocks = ? and room_id is not null",
+  )
+  + count(
+    "select count(*) from pending_items where role = 'tool' and unlocks = ?",
+  )
 }
 
 /// Give items a role (and a key the lock it opens), after the room is

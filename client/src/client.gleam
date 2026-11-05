@@ -615,7 +615,12 @@ fn view_game(model: Model) -> Element(Msg) {
           case e.lock {
             Some(lock) ->
               html.span([class("glimpse-lock")], [text(" · locked: " <> lock)])
-            None -> element.none()
+            None ->
+              case e.obstacle {
+                Some(obstacle) ->
+                  html.span([class("glimpse-lock")], [text(" · " <> obstacle)])
+                None -> element.none()
+              }
           },
         ])
       None -> element.none()
@@ -811,9 +816,10 @@ fn view_exits(
               [
                 html.span([class("arrow")], [text(arrow(e.direction))]),
                 text(e.direction),
-                case e.lock {
-                  Some(_) -> html.span([class("lock")], [text(" 🔒")])
-                  None -> element.none()
+                case e.lock, e.obstacle {
+                  Some(_), _ -> html.span([class("lock")], [text(" 🔒")])
+                  None, Some(_) -> html.span([class("lock")], [text(" ⚒")])
+                  None, None -> element.none()
                 },
               ],
             )
@@ -829,7 +835,14 @@ fn view_exits(
                   html.span([class("glimpse-lock")], [
                     text(" · locked: " <> lock),
                   ])
-                None -> element.none()
+                None ->
+                  case e.obstacle {
+                    Some(obstacle) ->
+                      html.span([class("glimpse-lock")], [
+                        text(" · " <> obstacle),
+                      ])
+                    None -> element.none()
+                  }
               },
             ])
           None ->

@@ -22,14 +22,76 @@ import server/world/types.{type Direction, type Exit, type Room}
 
 const attempts = 4
 
-/// Percent of new rooms asked to have a locked way out (when they can).
-const lock_chance = 30
+/// How far a cell is from the crossroads: steps across the streets, with
+/// each level up or down counting double (going underground is a bigger
+/// step than going round a corner).
+pub fn distance(cell: types.Cell) -> Int {
+  let #(x, y, z) = cell
+  int.absolute_value(x) + int.absolute_value(y) + 2 * int.absolute_value(z)
+}
 
-/// Percent of places below the streets that are pitch dark.
-const dark_chance = 45
+/// 0 gentle (distance 0-2), 1 wary (3-5), 2 perilous (6 and beyond).
+pub fn tier(cell: types.Cell) -> Int {
+  case distance(cell) {
+    d if d <= 2 -> 0
+    d if d <= 5 -> 1
+    _ -> 2
+  }
+}
 
-/// Percent of new rooms that get a tin of oil, once lights exist.
-const fuel_chance = 15
+pub fn tier_name(tier: Int) -> String {
+  case tier {
+    0 -> "gentle"
+    1 -> "wary"
+    _ -> "perilous"
+  }
+}
+
+/// Percent chances for a new room at each difficulty.
+pub type Odds {
+  Odds(dark: Int, obstacle: Int, lock: Int, gift: Int)
+}
+
+pub fn odds(tier: Int) -> Odds {
+  case tier {
+    // Near the crossroads: nothing in the way, and things worth finding.
+    0 -> Odds(dark: 0, obstacle: 0, lock: 0, gift: 30)
+    1 -> Odds(dark: 25, obstacle: 20, lock: 15, gift: 15)
+    _ -> Odds(dark: 45, obstacle: 25, lock: 30, gift: 10)
+  }
+}
+
+/// Something worth picking up, for a gift: a tool of a kind not already
+/// lying around (so finds stay varied), else a lantern if none is free,
+/// else oil once lanterns exist. `None` if all of that is already about.
+fn helpful_find(store: Store) -> Option(store.Pending) {
+  let tools =
+    types.tool_kinds
+    |> list.filter(fn(k) { store.free_tools(store, k.kind) == 0 })
+    |> list.map(fn(k) {
+      store.Pending(
+        name: k.name,
+        looks: k.looks,
+        role: "tool",
+        unlocks: Some(k.kind),
+      )
+    })
+  let lights = case store.free_lights(store) {
+    0 -> [lantern()]
+    _ -> []
+  }
+  let oil = case store.any_lights(store) {
+    True -> [oil_tin()]
+    False -> []
+  }
+  case list.flatten([tools, lights, oil]) {
+    [] -> None
+    options ->
+      list.drop(options, int.random(list.length(options)))
+      |> list.first
+      |> option.from_result
+  }
+}
 
 fn lantern() -> store.Pending {
   store.Pending(
@@ -172,15 +234,19 @@ fn invent(
   // (one locked, one to the room holding its key), which the model's exits
   // decide; checked again after it answers.
   let level = target.2
-  // Some places below the streets are pitch dark (see `dark_chance`).
-  let dark = level < 0 && int.random(100) < dark_chance
-  // Once lights exist, oil to keep them burning turns up now and then.
-  let fuel = case store.any_lights(store) && int.random(100) < fuel_chance {
-    True -> [oil_tin()]
+  // Difficulty grows with distance from the crossroads: near it, no dark,
+  // no locks or obstacles, and the only things to find are helpful.
+  let tier = tier(target)
+  let odds = odds(tier)
+  // Some places below the streets are pitch dark.
+  let dark = level < 0 && int.random(100) < odds.dark
+  // Something helpful to pick up now and then (a tool, a light, oil).
+  let gift = case int.random(100) < odds.gift {
+    True -> option.values([helpful_find(store)])
     False -> []
   }
-  let required = list.append(store.pending_at(store, target), fuel)
-  let want_lock = int.random(100) < lock_chance
+  let required = list.append(store.pending_at(store, target), gift)
+  let want_lock = int.random(100) < odds.lock
   let prompt =
     prompt(
       store,
@@ -309,6 +375,25 @@ fn invent(
       }
       let lock_note =
         place_lock(store, id, target, proposal, neighbours, back, from)
+      // Sometimes (and not as well as a lock) a way out is blocked by an
+      // obstacle a tool gets you past.
+      let obstacle_note = case
+        lock_note == "" && int.random(100) < odds.obstacle
+      {
+        True ->
+          place_obstacle(
+            store,
+            client,
+            id,
+            target,
+            proposal,
+            neighbours,
+            back,
+            from,
+            region,
+          )
+        False -> ""
+      }
       // What each item plainly looks like, for its close-up when examined.
       list.each(proposal.items, fn(item) {
         case list.key_find(proposal.looks, item) {
@@ -322,7 +407,12 @@ fn invent(
         prompt,
         list.append(
           build_log,
-          [lock_note, dark_note]
+          [
+            "difficulty: " <> tier_name(tier),
+            lock_note,
+            obstacle_note,
+            dark_note,
+          ]
             |> list.filter(non_empty)
             |> list.map(fn(note) {
               store.BuildAttempt(feedback: "", reply: "", problem: note)
@@ -361,6 +451,221 @@ fn invent(
         })
       Built(room_id: id, new: True, touched: [from.id, ..touched])
     }
+  }
+}
+
+/// Block one of the room's new ways out (one leading somewhere unbuilt) with
+/// an obstacle of a random tool kind, described by a small question to the
+/// model. If no tool of that kind is free anywhere, one is promised to an
+/// unbuilt place reachable without passing the obstacle; if there's nowhere
+/// for it, there's no obstacle.
+fn place_obstacle(
+  store: Store,
+  client: Client,
+  room_id: Int,
+  cell: types.Cell,
+  proposal: Proposal,
+  neighbours: List(#(Direction, Room)),
+  back: Direction,
+  from: Room,
+  region: types.Region,
+) -> String {
+  let open_exits =
+    proposal.exits
+    |> list.filter_map(fn(e) {
+      use d <- result.try(types.parse_direction(e.0))
+      case
+        d != back
+        && result.is_error(list.key_find(neighbours, d))
+        && store.room_at(store, types.step(cell, d)) == None
+      {
+        True -> Ok(#(d, e.1))
+        False -> Error(Nil)
+      }
+    })
+  let kinds = types.tool_kinds
+  let assert Ok(kind) =
+    list.drop(kinds, int.random(list.length(kinds))) |> list.first
+  case open_exits {
+    [] -> ""
+    [#(blocked, hint), ..others] -> {
+      let blocked_cell = types.step(cell, blocked)
+      let tool_spot = case store.free_tools(store, kind.kind) {
+        0 -> {
+          let here =
+            list.map(others, fn(o) {
+              #(
+                types.step(cell, o.0),
+                "beyond this room's way " <> types.direction_name(o.0),
+              )
+            })
+          let behind =
+            from.exits
+            |> list.filter(fn(e) {
+              e.target == None && e.lock == None && e.obstacle == None
+            })
+            |> list.map(fn(e) {
+              #(
+                types.step(types.cell(from), e.direction),
+                "beyond "
+                  <> from.name
+                  <> "'s way "
+                  <> types.direction_name(e.direction),
+              )
+            })
+            |> list.filter(fn(c) {
+              c.0 != cell
+              && c.0 != blocked_cell
+              && store.room_at(store, c.0) == None
+            })
+          case list.append(here, behind) {
+            [spot, ..] -> Ok(Some(spot))
+            [] -> Error(Nil)
+          }
+        }
+        _ -> Ok(None)
+      }
+      case tool_spot {
+        Error(Nil) ->
+          "obstacle dropped: no "
+          <> kind.name
+          <> " is to be had, and nowhere reachable to promise one"
+        Ok(spot) -> {
+          let desc =
+            describe_obstacle(client, region, proposal.name, hint, kind)
+          store.set_obstacle(
+            store,
+            room_id,
+            blocked,
+            types.Obstacle(kind: kind.kind, desc:),
+          )
+          let tool_note = case spot {
+            Some(#(tool_cell, where)) -> {
+              store.add_pending(
+                store,
+                tool_cell,
+                store.Pending(
+                  name: kind.name,
+                  looks: kind.looks,
+                  role: "tool",
+                  unlocks: Some(kind.kind),
+                ),
+              )
+              "; " <> a(kind.name) <> " is promised to the room " <> where
+            }
+            None -> "; " <> a(kind.name) <> " is already to be had"
+          }
+          "used: the way "
+          <> types.direction_name(blocked)
+          <> " is blocked ("
+          <> desc
+          <> ")"
+          <> tool_note
+        }
+      }
+    }
+  }
+}
+
+/// "a crowbar", "an iron crowbar".
+fn a(name: String) -> String {
+  case
+    list.contains(
+      ["a", "e", "i", "o", "u"],
+      string.slice(string.lowercase(name), 0, 1),
+    )
+  {
+    True -> "an " <> name
+    False -> "a " <> name
+  }
+}
+
+/// What blocks the way, in the model's words if it gives some.
+fn describe_obstacle(
+  client: Client,
+  region: types.Region,
+  place: String,
+  hint: String,
+  kind: types.ToolKind,
+) -> String {
+  let ask =
+    seed.setting
+    <> "\n\nA place called \""
+    <> place
+    <> "\" in "
+    <> region.name
+    <> ". One way out of it ("
+    <> hint
+    <> ") is blocked by "
+    <> kind.obstacles
+    <> ". Describe what blocks it, in 5-12 words."
+    <> "\nReply with JSON only: {\"obstacle\": \"what blocks the way\"}"
+  let fallback = case kind.kind {
+    "crowbar" -> "a rusted iron grate, its hinges seized"
+    "rope" -> "a sheer drop where the stairs have fallen away"
+    _ -> "a ladder pulled up well out of reach"
+  }
+  // It has to be something this tool deals with (one model reply was "a
+  // decrepit wooden wheel" for a crowbar): otherwise, the stock one.
+  let fits = fn(desc: String) {
+    let text = string.lowercase(desc)
+    obstacle_words(kind.kind) |> list.any(string.contains(text, _))
+  }
+  case llm.generate(client, llm.Ask(..llm.ask_json(ask), timeout: 30_000)) {
+    Ok(text) ->
+      case json.parse(text, decode.at(["obstacle"], decode.string)) {
+        Ok(desc) ->
+          case lock_text(desc) {
+            "" -> fallback
+            desc ->
+              case fits(desc) {
+                True -> desc
+                False -> fallback
+              }
+          }
+        Error(_) -> fallback
+      }
+    Error(Nil) -> fallback
+  }
+}
+
+/// Words that show an obstacle is the kind its tool deals with.
+pub fn obstacle_words(kind: String) -> List(String) {
+  case kind {
+    "crowbar" -> [
+      "grate",
+      "board",
+      "plank",
+      "hatch",
+      "nailed",
+      "stuck",
+      "rusted shut",
+      "jammed",
+      "shutter",
+      "bars",
+    ]
+    "rope" -> [
+      "drop",
+      "stair",
+      "ledge",
+      "gap",
+      "shaft",
+      "chasm",
+      "pit",
+      "collapsed",
+      "fallen away",
+      "climb",
+    ]
+    _ -> [
+      "ladder",
+      "hatch",
+      "drawbridge",
+      "out of reach",
+      "overhead",
+      "high above",
+      "raised",
+      "pulled up",
+    ]
   }
 }
 
