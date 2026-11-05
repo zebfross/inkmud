@@ -59,9 +59,14 @@ fights are local and a region can be divided between factions. Rooms already
 have fixed coordinates, so a room's district is `(x div 4, y div 4, z)` and
 needs no extra storage.
 
-**Influence** is a per-faction score in each district. Whoever holds the
-most controls it. To change hands, a challenger needs a margin (for example
-+20%), so control doesn't flicker back and forth.
+**Influence** is a per-faction score in each district, and it decides who
+holds the territory. (This is separate from leadership: a player's
+influence only qualifies them to stand for office; see
+[Leadership](#leadership).) The faction with the most influence in a
+district controls it. For a district to pass from one faction to another,
+the rival faction must beat the holder's influence there by a margin (for
+example 20%), so control doesn't flicker back and forth when two factions
+are close.
 
 **Earning influence** (each action credits both the faction's district
 score and the player's term total):
