@@ -17,6 +17,14 @@ export function after(ms, callback) {
   setTimeout(callback, ms);
 }
 
+// Keep the newest chronicle entry on screen (above the command bar), and
+// the journal at its newest.
+export function revealLatest() {
+  const feed = document.querySelector(".chronicle-feed");
+  const last = feed && feed.lastElementChild;
+  if (last) last.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
 export function scrollLog() {
   const log = document.getElementById("log");
   if (log) log.scrollTop = log.scrollHeight;
@@ -42,6 +50,12 @@ export function deviceKey() {
   } catch {
     return "";
   }
+}
+
+// The time now, "23:41", for the chronicle.
+export function now() {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 // A tiny haptic tick where the device supports it (Android); silent elsewhere.

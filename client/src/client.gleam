@@ -5,6 +5,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import lustre
 import lustre/attribute.{class}
@@ -40,6 +41,12 @@ fn ffi_focus_input() -> Nil
 
 @external(javascript, "./client_ffi.mjs", "deviceKey")
 fn ffi_device_key() -> String
+
+@external(javascript, "./client_ffi.mjs", "revealLatest")
+fn ffi_reveal_latest() -> Nil
+
+@external(javascript, "./client_ffi.mjs", "now")
+fn ffi_now() -> String
 
 @external(javascript, "./client_ffi.mjs", "buzz")
 fn ffi_buzz() -> Nil
@@ -79,8 +86,9 @@ type Kind {
   Picture(url: String)
 }
 
+/// `at`: when it happened, "23:41".
 type Entry {
-  Entry(kind: Kind, text: String)
+  Entry(kind: Kind, text: String, at: String)
 }
 
 type Model {
@@ -96,7 +104,9 @@ type Model {
     /// Most recent first, capped.
     log: List(Entry),
     room: Option(RoomView),
-    inventory: List(String),
+    inventory: List(protocol.ItemView),
+    /// The full history, opened on demand (the screen shows the latest).
+    journal_open: Bool,
     /// The server allows developer actions.
     dev_tools: Bool,
     /// The Reset world button was clicked once; waiting for "Yes".
@@ -145,6 +155,7 @@ type Msg {
   OpenMap
   MapMsg(worldmap.Msg)
   PlayHere
+  ToggleJournal
   OpenDebug
   CloseDebug
   DebugKey(String)
@@ -176,6 +187,7 @@ fn init(_) -> #(Model, Effect(Msg)) {
       log: [],
       room: None,
       inventory: [],
+      journal_open: False,
       dev_tools: False,
       confirming_reset: False,
       pending_name: case saved {
@@ -276,6 +288,13 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     Key("ArrowDown") -> recall(model, model.history_pos - 1)
     Key(_) -> #(model, effect.none())
     PlayHere -> #(Model(..model, replaced: False), connect())
+    ToggleJournal -> {
+      let open = !model.journal_open
+      #(Model(..model, journal_open: open, more_open: False), case open {
+        True -> scroll()
+        False -> effect.none()
+      })
+    }
     OpenDebug ->
       case model.room {
         Some(room) -> #(
@@ -514,7 +533,10 @@ fn receive(model: Model, msg: ServerMsg) -> #(Model, Effect(Msg)) {
 }
 
 fn add(model: Model, kind: Kind, text: String) -> Model {
-  Model(..model, log: list.take([Entry(kind, text), ..model.log], 400))
+  Model(
+    ..model,
+    log: list.take([Entry(kind, text, ffi_now()), ..model.log], 400),
+  )
 }
 
 fn clear_waiting(model: Model) -> Model {
@@ -530,7 +552,10 @@ fn send(model: Model, msg: protocol.ClientMsg) -> Effect(Msg) {
 }
 
 fn scroll() -> Effect(Msg) {
-  effect.after_paint(fn(_, _) { ffi_scroll_log() })
+  effect.after_paint(fn(_, _) {
+    ffi_scroll_log()
+    ffi_reveal_latest()
+  })
 }
 
 // VIEW ------------------------------------------------------------------------
@@ -580,9 +605,11 @@ fn view_login(model: Model) -> Element(Msg) {
         }),
       ]),
     ]),
-    view_log_entries(
-      list.filter(model.log, fn(e) { e.kind == System }) |> list.take(1),
-    ),
+    // The latest system message (a name already in use, say).
+    case list.find(model.log, fn(e) { e.kind == System }) {
+      Ok(entry) -> html.p([class("login-message")], [text(entry.text)])
+      Error(Nil) -> element.none()
+    },
   ])
 }
 
@@ -593,55 +620,51 @@ fn bool_guard(when: Bool, then: fn() -> a, otherwise: fn() -> a) -> a {
   }
 }
 
-/// One set of elements, arranged by CSS: on a wide screen the picture and
-/// actions sit beside the story; on a phone the picture is a banner (that
-/// shrinks while typing), the story fills the middle, and the actions and
-/// command box are pinned to the bottom, above the keyboard.
+/// The game screen (after the Stitch "Blackfriars Wynd" design): a top bar
+/// and the place's name; the scene with its ways out labelled on it; the
+/// chronicle of what just happened (newest largest, full history in the
+/// journal); who and what is here; a compass, the satchel and a glimpse
+/// along a way out; and the command line. On a phone the panels stack, with
+/// tabs at the bottom to jump between them.
 fn view_game(model: Model) -> Element(Msg) {
-  html.main([class("game")], [
+  html.div([class("shell")], [
     case model.map {
       Some(state) -> element.map(worldmap.view(state), MapMsg)
       None -> element.none()
     },
-    view_art(model.room),
-    view_actions(model),
-    // Phone: a held glimpse floats above the action row (inside the row it
-    // would be clipped by its sideways scrolling).
-    case model.glimpse {
-      Some(e) ->
-        html.p([class("glimpse-float")], [
-          html.span([class("glimpse-dir")], [text(e.direction)]),
-          text(e.hint),
-          case e.lock {
-            Some(lock) ->
-              html.span([class("glimpse-lock")], [text(" · locked: " <> lock)])
-            None ->
-              case e.obstacle {
-                Some(obstacle) ->
-                  html.span([class("glimpse-lock")], [text(" · " <> obstacle)])
-                None -> element.none()
-              }
-          },
+    view_topbar(model),
+    case model.room {
+      None ->
+        html.main([class("board")], [
+          html.p([class("waiting-room")], [
+            text("Finding your way through the fog…"),
+          ]),
         ])
-      None -> element.none()
+      Some(room) ->
+        html.main([class("board")], [
+          view_location(model, room),
+          html.div([class("columns")], [
+            html.div([class("main-col")], [
+              view_scene(room),
+              view_chronicle(model),
+              view_souls(room),
+              view_curios(room),
+            ]),
+            html.aside([class("side-col")], [
+              view_compass(room),
+              view_satchel(model),
+              view_glimpse(model),
+              html.div([class("wide-only")], [view_dev_tools(model)]),
+            ]),
+          ]),
+        ])
     },
-    html.div([attribute.id("log"), class("log")], [
-      view_log_entries(model.log),
-    ]),
-    html.form([class("prompt"), event.on_submit(fn(_) { Submit })], [
-      html.span([class("caret")], [text("›")]),
-      html.input([
-        attribute.id("command"),
-        attribute.placeholder("What do you do?"),
-        attribute.value(model.input),
-        attribute.autocomplete("off"),
-        attribute.attribute("autocapitalize", "off"),
-        attribute.attribute("enterkeyhint", "send"),
-        event.on_input(Input),
-        event.on_keydown(Key),
-      ]),
-      html.button([class("send"), attribute.title("Send")], [text("↵")]),
-    ]),
+    view_commandbar(model),
+    view_tabs(),
+    case model.journal_open {
+      True -> view_journal(model)
+      False -> element.none()
+    },
     case model.more_open {
       True -> view_more_sheet(model)
       False -> element.none()
@@ -653,84 +676,570 @@ fn view_game(model: Model) -> Element(Msg) {
   ])
 }
 
-fn view_art(room: Option(RoomView)) -> Element(Msg) {
-  html.figure([class("art")], [
-    case room {
-      // Pitch dark without a light: nothing to see, not even the picture.
-      Some(protocol.RoomView(dark: True, ..)) ->
-        html.div([class("picture dark")], [text("pitch dark")])
-      Some(protocol.RoomView(art: Some(url), name:, ..)) ->
-        html.img([attribute.src(url), attribute.alt(name), class("picture")])
-      _ ->
-        html.div([class("picture pending")], [text("the ink is still drying…")])
+/// A Material Symbols glyph.
+fn icon(name: String) -> Element(Msg) {
+  html.span([class("icon"), attribute.attribute("aria-hidden", "true")], [
+    text(name),
+  ])
+}
+
+fn icon_button(glyph: String, label: String, msg: Msg) -> Element(Msg) {
+  html.button(
+    [
+      class("icon-button"),
+      attribute.title(label),
+      attribute.attribute("aria-label", label),
+      event.on_click(msg),
+    ],
+    [icon(glyph)],
+  )
+}
+
+fn view_topbar(model: Model) -> Element(Msg) {
+  let name = option.unwrap(model.name, "")
+  html.header([class("topbar")], [
+    html.div([class("brand")], [
+      html.span([class("brand-mark")], [icon("local_fire_department")]),
+      html.div([class("brand-text")], [
+        html.span([class("brand-name")], [text("Vellmoor")]),
+        html.span([class("brand-sub")], [text("a city of gaslight and fog")]),
+      ]),
+    ]),
+    case model.room {
+      Some(room) ->
+        html.div([class("place-pill")], [icon("explore"), text(room.name)])
+      None -> element.none()
     },
-    case room {
-      Some(r) ->
-        html.figcaption([], [
-          html.div([class("place")], [
-            html.span([class("region")], [text(r.region)]),
-            html.span([class("place-name")], [text(r.name)]),
+    html.div([class("topbar-right")], [
+      view_lantern_gauge(model),
+      icon_button("map", "Map", OpenMap),
+      icon_button("history_edu", "Journal", ToggleJournal),
+      icon_button("more_horiz", "More", ToggleMore),
+      html.div([class("player")], [
+        html.span([class("player-name")], [text(name)]),
+        html.span([class("avatar")], [text(string.slice(name, 0, 1))]),
+      ]),
+    ]),
+  ])
+}
+
+/// The carried lantern's oil, if there is one.
+fn view_lantern_gauge(model: Model) -> Element(Msg) {
+  case list.find(model.inventory, fn(i) { i.role == "light" }) {
+    Error(Nil) -> element.none()
+    Ok(light) -> {
+      let oil = case string.split(light.note, " ") {
+        ["oil", n] -> int.parse(n) |> result.unwrap(0)
+        _ -> 0
+      }
+      let pct = int.min(100, oil * 100 / 30)
+      html.div(
+        [class("gauge"), attribute.title(light.name <> ": " <> light.note)],
+        [
+          icon("wb_incandescent"),
+          html.span([class("gauge-label")], [text("Lantern")]),
+          html.span([class("gauge-track")], [
+            html.span(
+              [
+                class("gauge-fill"),
+                attribute.styles([#("width", int.to_string(pct) <> "%")]),
+              ],
+              [],
+            ),
           ]),
-          html.div([class("caption-buttons")], [
-            html.button(
-              [
-                class("chip map-button"),
-                attribute.title("Open your map"),
-                event.on_click(OpenMap),
-              ],
-              [text("Map")],
+          html.span([class("gauge-value")], [text(int.to_string(oil))]),
+        ],
+      )
+    }
+  }
+}
+
+fn view_location(_model: Model, room: RoomView) -> Element(Msg) {
+  html.section([class("card location")], [
+    html.span([class("location-icon")], [
+      icon(case room.dark {
+        True -> "dark_mode"
+        False -> "foggy"
+      }),
+    ]),
+    html.h1([class("location-name")], [text(room.name)]),
+    html.span([class("badge")], [text(room.region)]),
+  ])
+}
+
+/// The picture, with the ways out labelled where they lead: north at the
+/// top, east at the right, and so on. A label goes that way.
+fn view_scene(room: RoomView) -> Element(Msg) {
+  html.section([class("card scene"), attribute.id("scene")], [
+    html.div([class("scene-frame")], [
+      case room.dark, room.art {
+        True, _ -> html.div([class("scene-picture dark")], [text("pitch dark")])
+        False, Some(url) ->
+          html.img([
+            attribute.src(url),
+            attribute.alt(room.name),
+            class("scene-picture"),
+          ])
+        False, None ->
+          html.div([class("scene-picture pending")], [
+            text("the ink is still drying…"),
+          ])
+      },
+      html.div([class("scene-vignette")], []),
+      html.div([class("scene-tag")], [icon("location_on"), text(room.region)]),
+      element.fragment(
+        list.map(room.exits, fn(e) {
+          html.button(
+            [
+              class("scene-label at-" <> e.direction),
+              attribute.title(e.hint),
+              event.on_click(ExitTap(e.direction)),
+              event.on("mouseenter", decode.success(Glimpse(e))),
+              event.on("mouseleave", decode.success(Unglimpse)),
+            ],
+            [
+              icon(case e.lock, e.obstacle {
+                Some(_), _ -> "lock"
+                None, Some(_) -> "construction"
+                None, None -> compass_glyph(e.direction)
+              }),
+              text(e.direction),
+            ],
+          )
+        }),
+      ),
+    ]),
+  ])
+}
+
+fn compass_glyph(direction: String) -> String {
+  case direction {
+    "north" -> "north"
+    "south" -> "south"
+    "east" -> "east"
+    "west" -> "west"
+    "up" -> "stairs"
+    _ -> "stairs_2"
+  }
+}
+
+/// What just happened. Everything since your last command (its answer, and
+/// anything that has happened since) is shown large; the few entries before
+/// it smaller. Each has its time; the full history is in the journal.
+fn view_chronicle(model: Model) -> Element(Msg) {
+  // Newest first: the answer runs back to (not including) your last command.
+  let #(answer, before) = split_at_echo(model.log, [])
+  let answer = list.take(answer, 6)
+  let before = list.take(before, int.max(2, 6 - list.length(answer)))
+  html.section([class("card chronicle")], [
+    html.div([class("card-head")], [
+      html.h2([], [icon("history_edu"), text("Chronicle")]),
+      html.button([class("link-button"), event.on_click(ToggleJournal)], [
+        text("Journal"),
+        icon("chevron_right"),
+      ]),
+    ]),
+    html.div(
+      [class("chronicle-feed")],
+      list.append(
+        list.reverse(before) |> list.map(view_entry(_, "earlier")),
+        list.reverse(answer) |> list.map(view_entry(_, "latest")),
+      ),
+    ),
+  ])
+}
+
+/// Split the newest-first log at the most recent command you typed: what
+/// came after it (newest first), and that command with everything before.
+fn split_at_echo(
+  log: List(Entry),
+  after: List(Entry),
+) -> #(List(Entry), List(Entry)) {
+  case log {
+    [] -> #(list.reverse(after), [])
+    [Entry(kind: Echo, ..), ..] -> #(list.reverse(after), log)
+    [entry, ..rest] -> split_at_echo(rest, [entry, ..after])
+  }
+}
+
+fn view_entry(entry: Entry, emphasis: String) -> Element(Msg) {
+  let time = html.span([class("entry-time")], [text(entry.at)])
+  case entry.kind {
+    Heading ->
+      html.div([class("entry heading " <> emphasis)], [
+        time,
+        html.span([class("entry-text")], [text("— " <> entry.text <> " —")]),
+      ])
+    Picture(url) ->
+      html.div([class("entry picture " <> emphasis)], [
+        time,
+        html.figure([class("closeup")], [
+          html.img([
+            attribute.src(url),
+            attribute.alt(entry.text),
+            event.on("load", decode.success(Scrolled)),
+          ]),
+          html.figcaption([], [text(entry.text)]),
+        ]),
+      ])
+    _ -> {
+      let kind = case entry.kind {
+        Narration -> "narration"
+        Social -> "social"
+        System -> "system"
+        Echo -> "echo"
+        Waiting -> "waiting"
+        _ -> ""
+      }
+      let body = case entry.kind {
+        Echo -> "› " <> entry.text
+        _ -> entry.text
+      }
+      html.div([class("entry " <> kind <> " " <> emphasis)], [
+        time,
+        html.span([class("entry-text")], [text(body)]),
+      ])
+    }
+  }
+}
+
+fn view_souls(room: RoomView) -> Element(Msg) {
+  case room.others {
+    [] -> element.none()
+    others ->
+      html.section([class("card souls")], [
+        html.div([class("card-head")], [
+          html.h2([], [icon("groups"), text("Souls here")]),
+          html.span([class("count")], [
+            text(int.to_string(list.length(others)) <> " present"),
+          ]),
+        ]),
+        html.div(
+          [class("tiles")],
+          list.map(others, fn(other) {
+            html.div([class("tile")], [
+              html.div([class("tile-head")], [
+                html.span([class("tile-icon")], [icon("person")]),
+                html.span([class("tile-name")], [text(other)]),
+              ]),
+              html.div([class("tile-actions")], [
+                html.button(
+                  [
+                    class("action"),
+                    event.on_click(Run("say Hail, " <> other <> "!")),
+                  ],
+                  [text("Hail")],
+                ),
+              ]),
+            ])
+          }),
+        ),
+      ])
+  }
+}
+
+fn view_curios(room: RoomView) -> Element(Msg) {
+  case room.items, room.dark {
+    [], _ | _, True -> element.none()
+    items, False ->
+      html.section([class("card curios")], [
+        html.div([class("card-head")], [
+          html.h2([], [icon("widgets"), text("Curios here")]),
+          html.span([class("count")], [
+            text(
+              int.to_string(list.length(items))
+              <> case items {
+                [_] -> " item"
+                _ -> " items"
+              },
             ),
-            html.button(
-              [
-                class("chip more-button"),
-                attribute.title("More"),
-                attribute.attribute("aria-label", "More"),
-                event.on_click(ToggleMore),
-              ],
-              [text("⋯")],
+          ]),
+        ]),
+        html.div(
+          [class("tiles")],
+          list.map(items, fn(item) {
+            html.div([class("tile")], [
+              html.div([class("tile-head")], [
+                html.span([class("tile-icon role-" <> item.role)], [
+                  icon(role_glyph(item.role)),
+                ]),
+                html.span([class("tile-name")], [text(item.name)]),
+                html.span([class("badge role-" <> item.role)], [
+                  text(item.note),
+                ]),
+              ]),
+              html.div([class("tile-actions")], [
+                html.button(
+                  [
+                    class("action"),
+                    event.on_click(Run("examine " <> item.name)),
+                  ],
+                  [text("Inspect")],
+                ),
+                html.button(
+                  [
+                    class("action primary"),
+                    event.on_click(Run("take " <> item.name)),
+                  ],
+                  [icon("pan_tool"), text("Take")],
+                ),
+              ]),
+            ])
+          }),
+        ),
+      ])
+  }
+}
+
+fn role_glyph(role: String) -> String {
+  case role {
+    "key" -> "key"
+    "light" -> "wb_incandescent"
+    "fuel" -> "oil_barrel"
+    "tool" -> "construction"
+    "map" -> "map"
+    "treasure" -> "diamond"
+    _ -> "category"
+  }
+}
+
+/// The compass: north, east, south and west around a hub; up and down
+/// beside it, with whether each is open, locked or blocked.
+fn view_compass(room: RoomView) -> Element(Msg) {
+  let find = fn(d) { list.find(room.exits, fn(e) { e.direction == d }) }
+  let point = fn(d: String, letter: String) {
+    case find(d) {
+      Ok(e) ->
+        html.button(
+          [
+            class(
+              "point at-"
+              <> d
+              <> case e.lock, e.obstacle {
+                Some(_), _ -> " barred"
+                None, Some(_) -> " barred"
+                None, None -> ""
+              },
             ),
+            attribute.title(e.hint),
+            event.on_click(ExitTap(d)),
+            event.on("mouseenter", decode.success(Glimpse(e))),
+            event.on("mouseleave", decode.success(Unglimpse)),
+            event.on("focus", decode.success(Glimpse(e))),
+            event.on("blur", decode.success(Unglimpse)),
+            event.on("touchstart", decode.success(PressStart(e))),
+            event.on("touchend", decode.success(PressEnd)),
+            event.on("touchmove", decode.success(PressCancel)),
+          ],
+          [text(letter)],
+        )
+      Error(Nil) -> html.span([class("point none at-" <> d)], [text(letter)])
+    }
+  }
+  let rise = fn(d: String, label: String) {
+    case find(d) {
+      Ok(e) -> {
+        let #(state, word) = case e.lock, e.obstacle {
+          Some(_), _ -> #("locked", "Locked")
+          None, Some(_) -> #("blocked", "Blocked")
+          None, None -> #("open", "Open")
+        }
+        html.button(
+          [
+            class("rise"),
+            attribute.title(e.hint),
+            event.on_click(ExitTap(d)),
+            event.on("mouseenter", decode.success(Glimpse(e))),
+            event.on("mouseleave", decode.success(Unglimpse)),
+          ],
+          [
+            icon(compass_glyph(d)),
+            html.span([class("rise-label")], [text(label)]),
+            html.span([class("state " <> state)], [text(word)]),
+          ],
+        )
+      }
+      Error(Nil) ->
+        html.span([class("rise none")], [
+          icon(compass_glyph(d)),
+          html.span([class("rise-label")], [text(label)]),
+          html.span([class("state")], [text("—")]),
+        ])
+    }
+  }
+  html.section([class("card compass"), attribute.id("compass")], [
+    html.div([class("card-head")], [
+      html.h2([], [icon("explore"), text("Ways out")]),
+      html.span([class("count")], [
+        text(int.to_string(list.length(room.exits)) <> " passages"),
+      ]),
+    ]),
+    html.div([class("compass-body")], [
+      html.div([class("dial")], [
+        point("north", "N"),
+        point("east", "E"),
+        point("south", "S"),
+        point("west", "W"),
+        html.div([class("hub")], [
+          html.span([class("hub-label")], [text("you")]),
+          html.span([class("hub-value")], [icon("my_location")]),
+        ]),
+      ]),
+      html.div([class("rises")], [
+        rise("up", "Up"),
+        rise("down", "Down"),
+        html.button([class("rise look"), event.on_click(Run("look"))], [
+          icon("visibility"),
+          html.span([class("rise-label")], [text("Look")]),
+        ]),
+      ]),
+    ]),
+  ])
+}
+
+/// What you carry, as slots: tap one to examine it.
+fn view_satchel(model: Model) -> Element(Msg) {
+  let carried = model.inventory
+  let empty = int.max(0, 8 - list.length(carried))
+  html.section([class("card satchel"), attribute.id("satchel")], [
+    html.div([class("card-head")], [
+      html.h2([], [icon("backpack"), text("Satchel")]),
+      html.span([class("count")], [
+        text(int.to_string(list.length(carried)) <> " carried"),
+      ]),
+    ]),
+    html.div(
+      [class("slots")],
+      list.append(
+        list.map(carried, fn(item) {
+          html.button(
+            [
+              class("slot role-" <> item.role),
+              attribute.title(item.name <> " (" <> item.note <> "): examine"),
+              event.on_click(Run("examine " <> item.name)),
+            ],
+            [
+              icon(role_glyph(item.role)),
+              html.span([class("slot-name")], [text(item.name)]),
+              html.span([class("slot-note")], [text(item.note)]),
+            ],
+          )
+        }),
+        list.repeat(html.span([class("slot empty")], [text("empty")]), empty),
+      ),
+    ),
+  ])
+}
+
+/// A glimpse along the way out being pointed at (or held), else a hint.
+fn view_glimpse(model: Model) -> Element(Msg) {
+  html.section([class("card glimpse-card")], [
+    icon("visibility"),
+    case model.glimpse {
+      Some(e) ->
+        html.p([], [
+          html.span([class("glimpse-dir")], [text(e.direction)]),
+          text(e.hint),
+          case e.lock, e.obstacle {
+            Some(lock), _ ->
+              html.span([class("glimpse-lock")], [text(" · locked: " <> lock)])
+            None, Some(o) ->
+              html.span([class("glimpse-lock")], [text(" · " <> o)])
+            None, None -> element.none()
+          },
+        ])
+      None ->
+        html.p([class("idle")], [
+          html.span([class("for-mouse")], [
+            text(
+              "Point at a way out to glimpse along it, or type “look north”.",
+            ),
+          ]),
+          html.span([class("for-touch")], [
+            text("Hold a way out to glimpse along it."),
           ]),
         ])
-      None -> element.none()
     },
   ])
 }
 
-fn view_actions(model: Model) -> Element(Msg) {
-  case model.room {
-    None -> element.none()
-    Some(room) ->
-      html.div([class("actions")], [
-        view_exits(room.exits, model.glimpse),
-        // Things: tap the name to examine it (text and a close-up), or
-        // use the small action beside it.
-        group(
-          "Here",
-          list.map(room.items, fn(i) { thing_chip(i, "take", "take " <> i) }),
+fn view_commandbar(model: Model) -> Element(Msg) {
+  let quick = [
+    #("Look", "look"),
+    #("Inventory", "inventory"),
+    #("Dig", "dig"),
+    #("Fill lantern", "fill lantern"),
+    #("Help", "help"),
+  ]
+  html.footer([class("commandbar")], [
+    html.div([class("quick")], [
+      html.span([class("quick-label")], [text("Quick")]),
+      element.fragment(
+        list.map(quick, fn(q) {
+          html.button([class("quick-chip"), event.on_click(Run(q.1))], [
+            text(q.0),
+          ])
+        }),
+      ),
+    ]),
+    html.form([class("prompt"), event.on_submit(fn(_) { Submit })], [
+      html.span([class("caret")], [text(">_")]),
+      html.input([
+        attribute.id("command"),
+        attribute.placeholder(
+          "Enter a command (e.g. 'go north', 'take spade', 'examine map')…",
         ),
-        group(
-          "Carrying",
-          list.map(model.inventory, fn(i) {
-            thing_chip(i, "drop", "drop " <> i)
-          }),
-        ),
-        group(
-          "Also here",
-          list.map(room.others, fn(p) {
-            html.span([class("person")], [text(p)])
-          }),
-        ),
-        // On a phone these live in the ⋯ sheet instead.
-        html.div([class("wide-only")], [
-          html.div([class("group leave")], [
-            html.button([class("link"), event.on_click(Leave)], [
-              text("Leave Vellmoor (change name)"),
-            ]),
-          ]),
-          view_dev_tools(model),
-        ]),
-      ])
+        attribute.value(model.input),
+        attribute.autocomplete("off"),
+        attribute.attribute("autocapitalize", "off"),
+        attribute.attribute("enterkeyhint", "send"),
+        attribute.attribute("spellcheck", "false"),
+        event.on_input(Input),
+        event.on_keydown(Key),
+      ]),
+      html.button([class("execute")], [icon("send"), text("Execute")]),
+    ]),
+  ])
+}
+
+/// Phone: jump between the panels, or open the map.
+fn view_tabs() -> Element(Msg) {
+  let tab = fn(href: String, glyph: String, label: String) {
+    html.a([class("tab"), attribute.href(href)], [
+      icon(glyph),
+      html.span([], [text(label)]),
+    ])
   }
+  html.nav([class("tabs")], [
+    tab("#scene", "terminal", "Story"),
+    tab("#compass", "explore", "Compass"),
+    tab("#satchel", "backpack", "Satchel"),
+    html.button([class("tab"), event.on_click(OpenMap)], [
+      icon("map"),
+      html.span([], [text("Map")]),
+    ]),
+  ])
+}
+
+/// The whole history, newest at the bottom.
+fn view_journal(model: Model) -> Element(Msg) {
+  html.div([class("drawer-backdrop"), event.on_click(ToggleJournal)], [
+    html.aside(
+      [class("drawer"), event.on_click(Noop) |> event.stop_propagation],
+      [
+        html.div([class("card-head")], [
+          html.h2([], [icon("history_edu"), text("Journal")]),
+          icon_button("close", "Close", ToggleJournal),
+        ]),
+        html.div(
+          [attribute.id("log"), class("journal-feed")],
+          model.log
+            |> list.reverse
+            |> list.map(view_entry(_, "earlier")),
+        ),
+      ],
+    ),
+  ])
 }
 
 /// Phone: the things that don't earn a place on screen all the time.
@@ -781,154 +1290,6 @@ fn view_dev_tools(model: Model) -> Element(Msg) {
         ]),
       ])
   }
-}
-
-/// Exit chips, and beneath them a glimpse along one: looking without going.
-/// With a mouse, hover (or keyboard focus) glimpses; on a touch screen,
-/// press and hold. A tap or click goes.
-fn view_exits(
-  exits: List(protocol.ExitView),
-  glimpse: Option(protocol.ExitView),
-) -> Element(Msg) {
-  case exits {
-    [] -> element.none()
-    _ ->
-      html.div([class("group exits")], [
-        html.h3([], [text("Ways out")]),
-        html.div(
-          [class("chips")],
-          list.map(exits, fn(e) {
-            html.button(
-              [
-                class("chip exit"),
-                attribute.attribute("aria-description", e.hint),
-                event.on_click(ExitTap(e.direction)),
-                event.on("mouseenter", decode.success(Glimpse(e))),
-                event.on("focus", decode.success(Glimpse(e))),
-                event.on("mouseleave", decode.success(Unglimpse)),
-                event.on("blur", decode.success(Unglimpse)),
-                event.on("touchstart", decode.success(PressStart(e))),
-                event.on("touchend", decode.success(PressEnd)),
-                event.on("touchmove", decode.success(PressCancel)),
-                event.on("contextmenu", decode.success(Noop))
-                  |> event.prevent_default,
-              ],
-              [
-                html.span([class("arrow")], [text(arrow(e.direction))]),
-                text(e.direction),
-                case e.lock, e.obstacle {
-                  Some(_), _ -> html.span([class("lock")], [text(" 🔒")])
-                  None, Some(_) -> html.span([class("lock")], [text(" ⚒")])
-                  None, None -> element.none()
-                },
-              ],
-            )
-          }),
-        ),
-        case glimpse {
-          Some(e) ->
-            html.p([class("glimpse")], [
-              html.span([class("glimpse-dir")], [text(e.direction)]),
-              text(e.hint),
-              case e.lock {
-                Some(lock) ->
-                  html.span([class("glimpse-lock")], [
-                    text(" · locked: " <> lock),
-                  ])
-                None ->
-                  case e.obstacle {
-                    Some(obstacle) ->
-                      html.span([class("glimpse-lock")], [
-                        text(" · " <> obstacle),
-                      ])
-                    None -> element.none()
-                  }
-              },
-            ])
-          None ->
-            html.p([class("glimpse idle")], [
-              html.span([class("for-mouse")], [
-                text("Hover a way out to glimpse it, or type “look north”."),
-              ]),
-              html.span([class("for-touch")], [
-                text("Hold a way out to glimpse it."),
-              ]),
-            ])
-        },
-      ])
-  }
-}
-
-fn arrow(direction: String) -> String {
-  case direction {
-    "north" -> "↑"
-    "south" -> "↓"
-    "east" -> "→"
-    "west" -> "←"
-    "up" -> "⤒"
-    "down" -> "⤓"
-    _ -> "•"
-  }
-}
-
-fn group(title: String, children: List(Element(Msg))) -> Element(Msg) {
-  case children {
-    [] -> element.none()
-    _ ->
-      html.div([class("group")], [
-        html.h3([], [text(title)]),
-        html.div([class("chips")], children),
-      ])
-  }
-}
-
-/// An item: its name examines it; the second part takes or drops it.
-fn thing_chip(name: String, verb: String, command: String) -> Element(Msg) {
-  html.span([class("thing")], [
-    html.button(
-      [
-        class("chip thing-name"),
-        attribute.title("Examine " <> name),
-        event.on_click(Run("examine " <> name)),
-      ],
-      [html.span([class("lens")], [text("◉")]), text(name)],
-    ),
-    html.button(
-      [
-        class("chip thing-act"),
-        attribute.title(verb <> " " <> name),
-        event.on_click(Run(command)),
-      ],
-      [text(verb)],
-    ),
-  ])
-}
-
-fn view_log_entries(entries: List(Entry)) -> Element(Msg) {
-  element.fragment(
-    entries
-    |> list.reverse
-    |> list.map(fn(entry) {
-      case entry.kind {
-        Heading -> html.h2([class("entry heading")], [text(entry.text)])
-        Narration -> html.p([class("entry narration")], [text(entry.text)])
-        Social -> html.p([class("entry social")], [text(entry.text)])
-        System -> html.p([class("entry system")], [text(entry.text)])
-        Echo -> html.p([class("entry echo")], [text("› " <> entry.text)])
-        Waiting -> html.p([class("entry waiting")], [text(entry.text)])
-        Picture(url) ->
-          html.figure([class("entry closeup")], [
-            html.img([
-              attribute.src(url),
-              attribute.alt(entry.text),
-              // Scroll once it has a size, or it lands below the fold.
-              event.on("load", decode.success(Scrolled)),
-            ]),
-            html.figcaption([], [text(entry.text)]),
-          ])
-      }
-    }),
-  )
 }
 
 // DEBUG -----------------------------------------------------------------------

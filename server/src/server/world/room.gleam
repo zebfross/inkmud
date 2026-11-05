@@ -5,6 +5,7 @@
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
@@ -190,6 +191,8 @@ fn handle_seen(state: State, message: Message) -> actor.Next(State, Message) {
       }
       let state = reload(state)
       refresh_all(state)
+      // Their satchel changed too.
+      tell(state, name, inventory_msg(state.store, name))
       actor.continue(state)
     }
 
@@ -208,6 +211,8 @@ fn handle_seen(state: State, message: Message) -> actor.Next(State, Message) {
       }
       let state = reload(state)
       refresh_all(state)
+      // Their satchel changed too.
+      tell(state, name, inventory_msg(state.store, name))
       actor.continue(state)
     }
 
@@ -226,6 +231,8 @@ fn handle_seen(state: State, message: Message) -> actor.Next(State, Message) {
       }
       let state = reload(state)
       refresh_all(state)
+      // Their satchel changed too.
+      tell(state, name, inventory_msg(state.store, name))
       actor.continue(state)
     }
 
@@ -291,6 +298,28 @@ fn describe(state: State, name: String, notify: Notify) {
   let view = view(state, name)
   notify(protocol.Room(view))
   notify(Line(Narration, view.description))
+}
+
+/// Items as the client shows them, with a short note: a light's oil, what
+/// a tool is for.
+pub fn item_views(rows: List(store.ItemRow)) -> List(protocol.ItemView) {
+  list.map(rows, fn(row) {
+    let note = case row.role {
+      "light" ->
+        case row.charge {
+          0 -> "out of oil"
+          n -> "oil " <> int.to_string(n)
+        }
+      "tool" -> option.unwrap(row.unlocks, "tool")
+      role -> role
+    }
+    protocol.ItemView(name: row.name, role: row.role, note:)
+  })
+}
+
+/// What a player carries, for their satchel.
+pub fn inventory_msg(store: Store, player: String) -> ServerMsg {
+  protocol.Inventory(item_views(store.carried_item_rows(store, player)))
 }
 
 /// An exit someone without a light could still feel their way along:
@@ -391,7 +420,7 @@ fn view(state: State, for: String) -> protocol.RoomView {
             option.map(e.obstacle, types.obstructed),
           )
         }),
-        items: room.items,
+        items: item_views(store.room_item_rows(state.store, room.id)),
         features: room.features,
         others:,
         art: room.art_url,

@@ -71,6 +71,33 @@ pub fn decode_client(text: String) -> Result(ClientMsg, Nil) {
 
 // SERVER → CLIENT -------------------------------------------------------------
 
+/// Something you can pick up (or carry): its name, its role ("key", "light",
+/// "fuel", "tool", "map", "treasure"), and a short note (a lantern's oil).
+pub type ItemView {
+  ItemView(name: String, role: String, note: String)
+}
+
+fn item_json(item: ItemView) -> Json {
+  json.object([
+    #("name", json.string(item.name)),
+    #("role", json.string(item.role)),
+    #("note", json.string(item.note)),
+  ])
+}
+
+fn item_decoder() -> Decoder(ItemView) {
+  decode.one_of(
+    {
+      use name <- decode.field("name", decode.string)
+      use role <- decode.optional_field("role", "", decode.string)
+      use note <- decode.optional_field("note", "", decode.string)
+      decode.success(ItemView(name:, role:, note:))
+    },
+    // A bare name (older servers).
+    [decode.string |> decode.map(fn(n) { ItemView(n, "", "") })],
+  )
+}
+
 pub type ExitView {
   /// `lock`: what bars it, if it's locked. `obstacle`: what blocks it and
   /// what you'd need, if a tool gets you past.
@@ -89,7 +116,7 @@ pub type RoomView {
     name: String,
     description: String,
     exits: List(ExitView),
-    items: List(String),
+    items: List(ItemView),
     /// Visual details worth a closer look (examinable).
     features: List(String),
     others: List(String),
@@ -185,7 +212,7 @@ pub type ServerMsg {
   Closeup(name: String, url: String)
   /// Work is under way that the player is waiting on (a room being built).
   Busy(text: String)
-  Inventory(items: List(String))
+  Inventory(items: List(ItemView))
 }
 
 pub fn encode_server(msg: ServerMsg) -> String {
@@ -280,7 +307,7 @@ pub fn encode_server(msg: ServerMsg) -> String {
     Inventory(items:) ->
       json.object([
         #("t", json.string("inventory")),
-        #("items", json.array(items, json.string)),
+        #("items", json.array(items, item_json)),
       ])
   }
   |> json.to_string
@@ -303,7 +330,7 @@ fn room_json(view: RoomView) -> Json {
         ])
       }),
     ),
-    #("items", json.array(view.items, json.string)),
+    #("items", json.array(view.items, item_json)),
     #("features", json.array(view.features, json.string)),
     #("others", json.array(view.others, json.string)),
     #("art", json.nullable(view.art, json.string)),
@@ -349,7 +376,7 @@ fn room_decoder() -> Decoder(RoomView) {
   use name <- decode.field("name", decode.string)
   use description <- decode.field("description", decode.string)
   use exits <- decode.field("exits", decode.list(exit))
-  use items <- decode.field("items", decode.list(decode.string))
+  use items <- decode.field("items", decode.list(item_decoder()))
   use features <- decode.optional_field(
     "features",
     [],
@@ -500,7 +527,7 @@ pub fn decode_server(text: String) -> Result(ServerMsg, Nil) {
         decode.success(Busy(text:))
       }
       "inventory" -> {
-        use items <- decode.field("items", decode.list(decode.string))
+        use items <- decode.field("items", decode.list(item_decoder()))
         decode.success(Inventory(items:))
       }
       _ -> decode.failure(Busy(""), "ServerMsg")

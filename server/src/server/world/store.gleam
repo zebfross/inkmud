@@ -1551,3 +1551,39 @@ pub fn reachable_unbuilt(store: Store) -> List(types.Cell) {
   })
   |> list.unique
 }
+
+// ITEM DETAILS (for the client's panels) -------------------------------------
+
+/// An item as the client shows it: name, role, what a tool is for (or a
+/// key's lock), and a light's oil.
+pub type ItemRow {
+  ItemRow(name: String, role: String, unlocks: Option(String), charge: Int)
+}
+
+fn item_rows(store: Store, where: String, arg: sqlight.Value) -> List(ItemRow) {
+  sqlight.query(
+    "select name, role, unlocks, charge from items where "
+      <> where
+      <> " and "
+      <> takeable()
+      <> " order by id",
+    store,
+    [arg],
+    {
+      use name <- decode.field(0, decode.string)
+      use role <- decode.field(1, decode.string)
+      use unlocks <- decode.field(2, decode.optional(decode.string))
+      use charge <- decode.field(3, decode.int)
+      decode.success(ItemRow(name:, role:, unlocks:, charge:))
+    },
+  )
+  |> result.unwrap([])
+}
+
+pub fn room_item_rows(store: Store, room_id: Int) -> List(ItemRow) {
+  item_rows(store, "room_id = ?", sqlight.int(room_id))
+}
+
+pub fn carried_item_rows(store: Store, player: String) -> List(ItemRow) {
+  item_rows(store, "holder = ?", sqlight.text(player))
+}

@@ -158,10 +158,7 @@ fn client_message(session: Session, msg: protocol.ClientMsg, conn) -> Session {
             }
             True -> {
               send(conn, protocol.Welcome(name, session.deps.dev_tools))
-              send(
-                conn,
-                protocol.Inventory(store.inventory(session.deps.store, name)),
-              )
+              send(conn, room.inventory_msg(session.deps.store, name))
               let room_id =
                 store.player_room(session.deps.store, name)
                 |> option.unwrap(session.deps.start_room)
@@ -337,7 +334,7 @@ fn run(session: Session, cmd: Command, interpreted: Bool, conn) -> Session {
     }
     command.Inventory -> {
       let items = store.inventory(session.deps.store, name)
-      send(conn, protocol.Inventory(items))
+      send(conn, room.inventory_msg(session.deps.store, name))
       let light = store.carried_light(session.deps.store, name)
       let described =
         list.map(items, fn(item) {
@@ -376,10 +373,7 @@ fn run(session: Session, cmd: Command, interpreted: Bool, conn) -> Session {
                 <> " steps in the dark.",
             ),
           )
-          send(
-            conn,
-            protocol.Inventory(store.inventory(session.deps.store, name)),
-          )
+          send(conn, room.inventory_msg(session.deps.store, name))
           // Lit again in a dark place: see it now.
           tell_room(room.Refresh)
           tell_room(room.Look(name))
@@ -417,10 +411,7 @@ fn run(session: Session, cmd: Command, interpreted: Bool, conn) -> Session {
                         <> "!",
                     ),
                   )
-                  send(
-                    conn,
-                    protocol.Inventory(store.inventory(session.deps.store, name)),
-                  )
+                  send(conn, room.inventory_msg(session.deps.store, name))
                   tell_room(room.Say(name, "Found it!"))
                 }
               }
@@ -553,10 +544,7 @@ fn on_event(session: Session, event: Event, conn) -> Session {
       send(conn, Line(Narration, text))
       send(
         conn,
-        protocol.Inventory(store.inventory(
-          session.deps.store,
-          option.unwrap(session.name, ""),
-        )),
+        room.inventory_msg(session.deps.store, option.unwrap(session.name, "")),
       )
       session
     }
