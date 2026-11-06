@@ -46,10 +46,56 @@ is winning).
 **Unpledged players** can explore and trade as now. They earn no influence,
 can't vote, and can't pass members-only doors.
 
-**Halls** are seeded rooms, one per region, near the crossroads at gentle
-difficulty. Each has a notice board (news, candidates, plaques) and is
-where treasure is delivered. A hall's description changes with its
-faction's fortunes (the model rewrites the flavour at each reckoning).
+**Halls** are the factions' fixed homes. Each has a notice board (news,
+candidates, plaques) and is where treasure is delivered. A hall's
+description changes with its faction's fortunes (the model rewrites the
+flavour at each reckoning).
+
+## Halls and hidden roads
+
+**Fixed places.** Each hall is a pre-built room at fixed coordinates, far
+enough from the crossroads (the "wary" band) that reaching one is a
+journey. Example placement:
+
+| Hall | Cell (x, y, z) |
+|---|---|
+| Lamplighters' Guild | (5, 2, 0) |
+| The Aldermen | (−3, 6, 1) |
+| The Tidewardens | (6, −5, 0) |
+| The Rookery | (−5, −4, −1) |
+
+**On the map from the start.** Every player's map shows the four halls as
+landmarks (sigil and name) at their cells and levels, before anyone has
+been there. The way there is blank until explored.
+
+**Hidden roads.** When the world is created, the engine lays out a road
+from the crossroads to each hall:
+- **The route:** a chain of cells, each one step from the last, wandering
+  rather than straight. It includes an up or down step where the hall is on
+  another level.
+- **What's stored:** for each road cell, the exits it must have (onward and
+  back).
+- **Built lazily:** the rooms themselves are not built ahead. When someone
+  first walks into a road cell, the builder writes the room as usual and
+  the engine always adds the road's exits, just as it already guarantees
+  promised items.
+- **Unmarked:** road exits look like any other, and nothing in the client
+  marks them, so players find the road only by exploring.
+- **Always passable:** a lock, darkness or obstacle on a road exit stays
+  passable, because its key, lantern or tool is promised as usual.
+
+Data: `road_exits(x, y, z, direction)`, checked by the builder alongside
+`pending_items`.
+
+**Existing worlds.** Roads are laid when a world is created. For a world
+that already exists:
+- If a road cell is already built, its road exits are added to that room.
+  A road cell that is already built is simply part of the road.
+- If a hall's cell is taken, it moves to the nearest free cell.
+- Resetting the world is simpler, for the dev world at least.
+
+**Discovery.** The first player to walk the whole way to a hall gets a news
+entry ("Wren has found the road to the Rookery").
 
 ## Territory and influence
 
@@ -247,7 +293,8 @@ lamps(room_id, lit)                                                   -- or a co
 Each step is playable on its own.
 
 0. **Accounts.**
-1. **Factions:** pledging and halls, plus the news feed.
+1. **Factions:** pledging, halls at fixed cells with hidden roads, hall
+   landmarks on the map, plus the news feed.
 2. **Influence:** from discoveries and treasure, districts, and the map
    coloured by control.
 3. **Lamps:** lamps and control perks.
