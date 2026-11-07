@@ -139,7 +139,23 @@ fn room_job(store: Store, room: Room) -> Job {
 /// well but not a scene plus small objects (a strong landmark like a gas
 /// lamp always won). Items get their own close-ups when examined.
 pub fn image_prompt(room: Room) -> String {
-  style <> ". " <> setting(room)
+  style <> ". " <> level(room.z) <> setting(room)
+}
+
+/// Where the place is, said before the scene so the 77-token limit can't
+/// cut it off: the picture line alone ("a still pool, gaslight above")
+/// can read as a dockside, when the place is a cavern under the streets.
+/// Worded as what's there, never "no sky": the image model's text encoder
+/// doesn't do negation, so "no sky" draws a sky.
+pub fn level(z: Int) -> String {
+  case z {
+    0 -> ""
+    z if z <= -2 ->
+      "Interior of a vast underground cavern, dark stone vault overhead, lantern light. "
+    z if z < 0 ->
+      "Interior of an underground passage beneath the city, arched stone ceiling overhead, lantern light. "
+    _ -> "High above the city, among rooftops and chimneys. "
+  }
 }
 
 /// The setting part of a room's stored picture line, whichever form it was

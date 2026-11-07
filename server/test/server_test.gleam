@@ -259,6 +259,16 @@ pub fn image_prompt_test() {
     )
   assert art.image_prompt(none)
     == art.style <> ". The Quay: wet stones, moored barges, gulls."
+  // Below or above the streets, the prompt says so before the scene.
+  let cavern =
+    types.Room(..room_with(5, []), z: -2, picture: "A vast, still pool.")
+  assert art.image_prompt(cavern)
+    == art.style
+    <> ". Interior of a vast underground cavern, dark stone vault overhead, lantern light. A vast, still pool."
+  let tunnel = types.Room(..room_with(6, []), z: -1, picture: "A tunnel.")
+  assert string.contains(art.image_prompt(tunnel), "underground passage")
+  let roof = types.Room(..room_with(7, []), z: 1, picture: "A ridge.")
+  assert string.contains(art.image_prompt(roof), "High above the city")
 }
 
 pub fn closeup_prompt_test() {

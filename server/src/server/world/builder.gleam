@@ -1073,7 +1073,12 @@ fn attempt(
               let duplicate =
                 list.contains(ctx.taken, string.lowercase(proposal.name))
               let copied = repeats(proposal.description, ctx.from_description)
-              let surfaced = above_ground_words(proposal.description, ctx.level)
+              // The picture line too: it alone decides what's drawn.
+              let surfaced =
+                above_ground_words(
+                  proposal.description <> " " <> proposal.picture,
+                  ctx.level,
+                )
               let missing =
                 list.filter(proposal.items, fn(i) {
                   !mentions(proposal.description, i)
