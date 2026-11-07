@@ -15,6 +15,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
 import gleam/string
+import logging
 import mist.{type Connection, type ResponseData}
 import server/art
 import server/command.{type Command}
@@ -189,6 +190,34 @@ fn client_message(session: Session, msg: protocol.ClientMsg, conn) -> Session {
       session
     }
     protocol.RequestMap, None -> session
+    protocol.Feedback(text, context), Some(name) -> {
+      case string.trim(text) {
+        "" -> Nil
+        note -> {
+          let room_name = case
+            store.load_room(session.deps.store, session.room_id)
+          {
+            Ok(room) -> room.name
+            Error(_) -> ""
+          }
+          store.add_feedback(
+            session.deps.store,
+            name,
+            session.room_id,
+            room_name,
+            string.slice(note, 0, 4000),
+            string.slice(context, 0, 6000),
+          )
+          logging.log(
+            logging.Info,
+            "feedback from " <> name <> ": " <> string.slice(note, 0, 120),
+          )
+          system(conn, "Thank you: your note is saved.")
+        }
+      }
+      session
+    }
+    protocol.Feedback(_, _), None -> session
     protocol.RequestDebug(room_id), Some(_) ->
       case
         session.deps.dev_tools,

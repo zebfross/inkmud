@@ -77,6 +77,15 @@ create table if not exists closeups (
   url text not null,
   prompt text not null
 );
+create table if not exists feedback (
+  id integer primary key,
+  at text not null default (datetime('now')),
+  player text not null,
+  room_id integer,
+  room_name text not null default '',
+  text text not null,
+  context text not null default ''
+);
 create table if not exists room_debug (
   room_id integer primary key references rooms(id),
   builder_prompt text not null default '',
@@ -750,6 +759,32 @@ pub fn save_build_debug(
        on conflict(room_id) do update set builder_prompt = excluded.builder_prompt, attempts = excluded.attempts",
       store,
       [sqlight.int(room_id), sqlight.text(prompt), sqlight.text(attempts_json)],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+/// A player's note about something that felt off. Kept across world resets
+/// (it's about the game, not this world).
+pub fn add_feedback(
+  store: Store,
+  player: String,
+  room_id: Int,
+  room_name: String,
+  text: String,
+  context: String,
+) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "insert into feedback (player, room_id, room_name, text, context) values (?, ?, ?, ?, ?)",
+      store,
+      [
+        sqlight.text(player),
+        sqlight.int(room_id),
+        sqlight.text(room_name),
+        sqlight.text(text),
+        sqlight.text(context),
+      ],
       decode.success(Nil),
     )
   Nil

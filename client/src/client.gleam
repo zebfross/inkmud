@@ -128,6 +128,8 @@ type Model {
     map_open: Bool,
     /// Phone: the ⋯ sheet (leave, developer tools).
     more_open: Bool,
+    /// The "something feels off" note box, while open, and its text.
+    feedback: Option(String),
     /// Dev only: the "how this room was made" panel.
     debug_open: Bool,
     debug: Option(protocol.DebugView),
@@ -166,6 +168,10 @@ type Msg {
   CloseDebug
   DebugKey(String)
   ToggleMore
+  OpenFeedback
+  CloseFeedback
+  FeedbackInput(String)
+  SendFeedback
   ExitTap(String)
   PressStart(protocol.ExitView)
   PressHeld(Int)
@@ -207,6 +213,7 @@ fn init(_) -> #(Model, Effect(Msg)) {
       map: None,
       map_open: False,
       more_open: False,
+      feedback: None,
       debug_open: False,
       debug: None,
       pressing: None,
@@ -320,6 +327,27 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
     DebugKey(_) -> #(model, effect.none())
     ToggleMore -> #(Model(..model, more_open: !model.more_open), effect.none())
+    OpenFeedback -> #(
+      Model(..model, feedback: Some(""), more_open: False),
+      effect.after_paint(fn(_, _) { ffi_focus("feedback-text") }),
+    )
+    CloseFeedback -> #(Model(..model, feedback: None), effect.none())
+    FeedbackInput(text) -> #(
+      Model(..model, feedback: Some(text)),
+      effect.none(),
+    )
+    SendFeedback ->
+      case model.feedback {
+        Some(note) ->
+          case string.trim(note) {
+            "" -> #(model, effect.none())
+            _ -> #(
+              Model(..model, feedback: None),
+              send(model, protocol.Feedback(note, feedback_context(model))),
+            )
+          }
+        None -> #(model, effect.none())
+      }
     Noop -> #(model, effect.none())
     Scrolled -> #(model, follow_text(model))
     ExitTap(direction) ->
@@ -728,6 +756,10 @@ fn view_game(model: Model) -> Element(Msg) {
       True -> view_more_sheet(model)
       False -> element.none()
     },
+    case model.feedback {
+      Some(note) -> view_feedback(note)
+      None -> element.none()
+    },
     case model.debug_open, model.debug {
       True, Some(debug) -> view_debug(debug)
       _, _ -> element.none()
@@ -773,6 +805,7 @@ fn view_topbar(model: Model) -> Element(Msg) {
       view_lantern_gauge(model),
       icon_button("map", "Map", OpenMap),
       icon_button("history_edu", "Journal", ToggleJournal),
+      icon_button("rate_review", "Feedback", OpenFeedback),
       icon_button("more_horiz", "More", ToggleMore),
       html.div([class("player")], [
         html.span([class("player-name")], [text(name)]),
@@ -1317,9 +1350,78 @@ fn view_journal(model: Model) -> Element(Msg) {
 }
 
 /// Phone: the things that don't earn a place on screen all the time.
+/// What the player was looking at, sent with their note: the place and
+/// their last few chronicle entries, oldest first.
+fn feedback_context(model: Model) -> String {
+  let place = case model.room {
+    Some(room) -> "Place: " <> room.name <> " (" <> room.region <> ")\n"
+    None -> ""
+  }
+  place
+  <> {
+    model.log
+    |> list.take(12)
+    |> list.reverse
+    |> list.map(fn(e) { e.at <> " " <> e.text })
+    |> string.join("\n")
+  }
+}
+
+/// A note about something that felt off: no need to know what to fix.
+fn view_feedback(note: String) -> Element(Msg) {
+  html.div(
+    [class("sheet-backdrop feedback-backdrop"), event.on_click(CloseFeedback)],
+    [
+      html.form(
+        [
+          class("sheet feedback"),
+          event.on_click(Noop) |> event.stop_propagation,
+          event.on_submit(fn(_) { SendFeedback }),
+        ],
+        [
+          html.h2([], [icon("rate_review"), text("Something feels off?")]),
+          html.p([class("feedback-hint")], [
+            text(
+              "Say what felt weird; no need to know the fix. Where you are and what just happened are sent with it.",
+            ),
+          ]),
+          html.textarea(
+            [
+              attribute.id("feedback-text"),
+              attribute.placeholder(
+                "e.g. the picture doesn't match the description…",
+              ),
+              attribute.attribute("rows", "5"),
+              event.on_input(FeedbackInput),
+            ],
+            note,
+          ),
+          html.div([class("feedback-actions")], [
+            html.button(
+              [
+                class("link"),
+                attribute.type_("button"),
+                event.on_click(CloseFeedback),
+              ],
+              [text("Cancel")],
+            ),
+            html.button(
+              [class("execute"), attribute.disabled(string.trim(note) == "")],
+              [icon("send"), text("Send")],
+            ),
+          ]),
+        ],
+      ),
+    ],
+  )
+}
+
 fn view_more_sheet(model: Model) -> Element(Msg) {
   html.div([class("sheet-backdrop"), event.on_click(ToggleMore)], [
     html.div([class("sheet"), event.on_click(Noop) |> event.stop_propagation], [
+      html.button([class("chip feedback-chip"), event.on_click(OpenFeedback)], [
+        text("Something feels off…"),
+      ]),
       html.button([class("chip"), event.on_click(Leave)], [
         text("Leave Vellmoor (change name)"),
       ]),

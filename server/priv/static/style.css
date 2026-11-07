@@ -397,11 +397,25 @@ button.slot:hover { background: var(--s-high); }
 .dev-warning { margin: 0 0 .5rem; font-size: .95rem; color: var(--on-variant); }
 .wide-only .dev { padding: 16px 18px; background: var(--s-low); border: 1px dashed var(--s-highest); border-radius: var(--radius); }
 
+/* Feedback */
+.feedback-backdrop { align-items: center; justify-content: center; }
+.sheet.feedback { margin: 0; width: min(520px, calc(100% - 24px)); align-items: stretch; }
+.feedback h2 { margin: 0; font: 600 1.15rem var(--display); color: var(--primary); display: flex; gap: .5rem; align-items: center; }
+.feedback-hint { margin: 0; color: var(--on-variant); font-size: .95rem; }
+.feedback textarea {
+  width: 100%; resize: vertical; min-height: 7rem; padding: .7rem .8rem; border-radius: 8px;
+  background: var(--s-lowest); border: 1px solid var(--s-high); color: var(--on); font: 16px/1.5 var(--text); outline: none;
+}
+.feedback textarea:focus { border-color: var(--primary-strong); }
+.feedback-actions { display: flex; justify-content: flex-end; align-items: center; gap: 1rem; }
+.feedback .execute:disabled { opacity: .45; cursor: default; filter: none; }
+.sheet .feedback-chip { background: var(--primary); color: var(--on-primary); }
+
 /* Phones */
 @media (max-width: 860px) {
   body { font-size: 17px; }
   .topbar { padding: 10px 12px; gap: .5rem; padding-top: max(10px, env(safe-area-inset-top)); }
-  .brand-sub, .brand-name, .player, .gauge-label, .icon-button[aria-label="Journal"] { display: none; }
+  .brand-sub, .brand-name, .player, .gauge-label, .icon-button[aria-label="Journal"], .icon-button[aria-label="Feedback"] { display: none; }
   .place-pill { display: block; max-width: none; flex: 1; min-width: 0; font-size: 13px; padding: .35rem .6rem; }
   .place-pill > .icon { display: none; }
   .brand-name { font-size: 1.1rem; }
@@ -448,6 +462,8 @@ button.slot:hover { background: var(--s-high); }
   .tab .icon { font-size: 22px; }
   .tab:hover, .tab:focus { color: var(--primary); background: var(--s-high); }
   .sheet-backdrop { align-items: flex-end; justify-content: stretch; }
+  .feedback-backdrop { align-items: flex-end; }
+  .sheet.feedback { width: 100%; }
   .sheet { margin: 0; width: 100%; border-radius: 14px 14px 0 0; padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
 }
 

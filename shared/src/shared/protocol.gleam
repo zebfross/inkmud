@@ -21,6 +21,9 @@ pub type ClientMsg {
   RequestMap
   /// Dev only: how this room was made (prompts and replies).
   RequestDebug(room_id: Int)
+  /// A player's note about something that felt off, with what they were
+  /// looking at (their last few chronicle entries).
+  Feedback(text: String, context: String)
 }
 
 pub fn encode_client(msg: ClientMsg) -> String {
@@ -40,6 +43,12 @@ pub fn encode_client(msg: ClientMsg) -> String {
     RequestMap -> json.object([#("t", json.string("map"))])
     RequestDebug(room_id:) ->
       json.object([#("t", json.string("debug")), #("room", json.int(room_id))])
+    Feedback(text:, context:) ->
+      json.object([
+        #("t", json.string("feedback")),
+        #("text", json.string(text)),
+        #("context", json.string(context)),
+      ])
   }
   |> json.to_string
 }
@@ -62,6 +71,11 @@ pub fn decode_client(text: String) -> Result(ClientMsg, Nil) {
       "debug" -> {
         use room_id <- decode.field("room", decode.int)
         decode.success(RequestDebug(room_id:))
+      }
+      "feedback" -> {
+        use text <- decode.field("text", decode.string)
+        use context <- decode.optional_field("context", "", decode.string)
+        decode.success(Feedback(text:, context:))
       }
       _ -> decode.failure(Command(""), "ClientMsg")
     }

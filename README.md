@@ -24,6 +24,12 @@ the server. The world lives in `data/` — delete it to start a fresh world.
 
 Tests: `cd server && gleam test`.
 
+**Feedback.** The ✎ button in the top bar (on phones, in the ⋯ menu) lets
+anyone leave a note about something that felt off. It's saved with the
+place and their last few chronicle entries, and kept across world resets.
+Read them with `scripts/feedback.sh` (`scripts/feedback.sh 5 short` for the
+newest five, one line each).
+
 **Reset world (dev only).** With `DEV_TOOLS=1` (which `dev.sh` sets), the
 room panel shows *Developer → Reset world*. After a confirm step it deletes
 every room, picture, item and player position, writes the seed again, and
