@@ -526,6 +526,25 @@ button.slot:hover { background: var(--s-high); }
 .map-count { color: var(--ink-faint); font: 13px/1.4 "JetBrains Mono", monospace; }
 .map-buttons { margin-left: auto; display: flex; gap: .4rem; }
 .map-buttons .chip { min-width: 2.4rem; }
+.map-stage { flex: 1; min-height: 0; position: relative; display: flex; }
+.map-compass {
+  position: absolute; top: 14px; right: 18px; width: 180px; pointer-events: none;
+  filter: drop-shadow(0 3px 8px var(--shadow));
+}
+.map-compass svg { display: block; width: 100%; overflow: visible; }
+.compass-ring { fill: color-mix(in srgb, var(--paper) 80%, transparent); stroke: var(--ink-faint); stroke-width: 1; }
+.compass-ring.inner { fill: none; stroke-dasharray: 1.5 3; }
+.compass-arm.lit { fill: var(--ink-soft); }
+.compass-arm.shade { fill: var(--chip); stroke: var(--ink-faint); stroke-width: .6; }
+.compass-arm.minor.lit { fill: var(--ink-faint); }
+.compass-arm.north.lit { fill: var(--accent); }
+.compass-arm.north.shade { fill: color-mix(in srgb, var(--accent) 45%, var(--chip)); stroke: none; }
+.compass-pin { fill: var(--paper); stroke: var(--ink-soft); stroke-width: 1; }
+.compass-letter {
+  fill: var(--ink-soft); font: 600 13px "Cinzel", "EB Garamond", Georgia, serif;
+  paint-order: stroke; stroke: var(--paper); stroke-width: 3px;
+}
+.compass-letter.north { fill: var(--accent); font-size: 16px; }
 .map-canvas { flex: 1; width: 100%; min-height: 0; cursor: grab; user-select: none; touch-action: none; }
 .map-canvas.dragging { cursor: grabbing; }
 .map-hint {
@@ -574,6 +593,7 @@ button.slot:hover { background: var(--s-high); }
   .map-bar { padding: 12px 16px; padding-top: max(12px, env(safe-area-inset-top)); gap: .25rem .75rem; }
   .map-bar h2 { font-size: 1.1rem; }
   .map-buttons .chip { min-width: 44px; min-height: 40px; }
+  .map-compass { width: 124px; top: 8px; right: 8px; }
   .map-hint { bottom: calc(8px + env(safe-area-inset-bottom)); font-size: 11px; padding: 0 16px; }
   /* The card: a compact strip at the bottom, picture beside the text. */
   .map-card {

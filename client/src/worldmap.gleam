@@ -285,51 +285,54 @@ pub fn view(state: State) -> Element(Msg) {
           button("✕", "Close map (Esc)", Close),
         ]),
       ]),
-      svg.svg(
-        [
-          class(case state.drag {
-            Some(_) -> "map-canvas dragging"
-            None -> "map-canvas"
-          }),
-          attribute("viewBox", view_box(state)),
-          attribute("preserveAspectRatio", "xMidYMid meet"),
-          event.on("mousedown", pointer(DragStart)),
-          event.on("mousemove", {
-            use x <- decode.field("clientX", number())
-            use y <- decode.field("clientY", number())
-            use width <- decode.subfield(
-              ["currentTarget", "clientWidth"],
-              number(),
-            )
-            decode.success(DragMove(x:, y:, width:))
-          }),
-          event.on("mouseup", decode.success(DragEnd)),
-          event.on("touchstart", touches() |> decode.map(TouchStart)),
-          event.on("touchmove", {
-            use points <- decode.then(touches())
-            use width <- decode.subfield(
-              ["currentTarget", "clientWidth"],
-              number(),
-            )
-            decode.success(TouchMove(points:, width:))
-          }),
-          event.on("touchend", decode.success(TouchEnd)),
-          event.on("touchcancel", decode.success(TouchEnd)),
-          event.on_click(Dismiss),
-          event.on("mouseleave", decode.success(DragEnd)),
-          event.on("wheel", {
-            use dy <- decode.field("deltaY", number())
-            decode.success(Wheel(dy))
-          })
-            |> event.prevent_default,
-        ],
-        // Bottom floor first, so higher floors are drawn over it; treasure
-        // marks on top of everything.
-        list.append(
-          list.flat_map(levels, fn(z) { view_level(state, z) }),
-          list.map(map.marks, fn(m) { view_mark(map, m) }),
+      html.div([class("map-stage")], [
+        svg.svg(
+          [
+            class(case state.drag {
+              Some(_) -> "map-canvas dragging"
+              None -> "map-canvas"
+            }),
+            attribute("viewBox", view_box(state)),
+            attribute("preserveAspectRatio", "xMidYMid meet"),
+            event.on("mousedown", pointer(DragStart)),
+            event.on("mousemove", {
+              use x <- decode.field("clientX", number())
+              use y <- decode.field("clientY", number())
+              use width <- decode.subfield(
+                ["currentTarget", "clientWidth"],
+                number(),
+              )
+              decode.success(DragMove(x:, y:, width:))
+            }),
+            event.on("mouseup", decode.success(DragEnd)),
+            event.on("touchstart", touches() |> decode.map(TouchStart)),
+            event.on("touchmove", {
+              use points <- decode.then(touches())
+              use width <- decode.subfield(
+                ["currentTarget", "clientWidth"],
+                number(),
+              )
+              decode.success(TouchMove(points:, width:))
+            }),
+            event.on("touchend", decode.success(TouchEnd)),
+            event.on("touchcancel", decode.success(TouchEnd)),
+            event.on_click(Dismiss),
+            event.on("mouseleave", decode.success(DragEnd)),
+            event.on("wheel", {
+              use dy <- decode.field("deltaY", number())
+              decode.success(Wheel(dy))
+            })
+              |> event.prevent_default,
+          ],
+          // Bottom floor first, so higher floors are drawn over it; treasure
+          // marks on top of everything.
+          list.append(
+            list.flat_map(levels, fn(z) { view_level(state, z) }),
+            list.map(map.marks, fn(m) { view_mark(map, m) }),
+          ),
         ),
-      ),
+        view_compass(),
+      ]),
       view_card(state),
       html.p([class("map-hint")], [
         text(
@@ -338,6 +341,91 @@ pub fn view(state: State) -> Element(Msg) {
       ]),
     ],
   )
+}
+
+// COMPASS ---------------------------------------------------------------------
+
+/// A compass rose drawn on the ground in the map's own projection, so its
+/// points line up with the streets: north runs up and to the right, east
+/// down and to the right. It stays in the corner while the map pans and
+/// zooms. Letters stay upright so they're easy to read.
+fn view_compass() -> Element(Msg) {
+  // Ground coordinates (east, south) to the compass's screen coordinates,
+  // the same shape as `project`.
+  let iso = fn(gx: Float, gy: Float) -> #(Float, Float) {
+    #({ gx -. gy } *. 1.0, { gx +. gy } *. 0.5)
+  }
+  let scale = fn(v: #(Float, Float), k: Float) { #(v.0 *. k, v.1 *. k) }
+  let origin = #(0.0, 0.0)
+  // A pointed arm from the middle toward `dir`, shaded half light, half
+  // dark, its width set toward `side` (the next point round).
+  let arm = fn(dir: #(Float, Float), side: #(Float, Float), length, width, cls) {
+    let tip = iso(dir.0 *. length, dir.1 *. length)
+    let left = iso(side.0 *. width, side.1 *. width)
+    let right = iso(0.0 -. side.0 *. width, 0.0 -. side.1 *. width)
+    [
+      svg.polygon([class(cls <> " lit"), points([origin, tip, left])]),
+      svg.polygon([class(cls <> " shade"), points([origin, tip, right])]),
+    ]
+  }
+  let cardinals = [
+    #("N", #(0.0, -1.0), #(1.0, 0.0)),
+    #("E", #(1.0, 0.0), #(0.0, 1.0)),
+    #("S", #(0.0, 1.0), #(-1.0, 0.0)),
+    #("W", #(-1.0, 0.0), #(0.0, -1.0)),
+  ]
+  let d = 0.7071
+  let diagonals = [
+    #(#(d, 0.0 -. d), #(d, d)),
+    #(#(d, d), #(0.0 -. d, d)),
+    #(#(0.0 -. d, d), #(0.0 -. d, 0.0 -. d)),
+    #(#(0.0 -. d, 0.0 -. d), #(d, 0.0 -. d)),
+  ]
+  let ring = fn(r: Float, cls: String) {
+    // A circle on the ground is an ellipse twice as wide as it is tall.
+    svg.ellipse([
+      class(cls),
+      attribute("cx", "0"),
+      attribute("cy", "0"),
+      attribute("rx", num(r *. 1.4142)),
+      attribute("ry", num(r *. 0.7071)),
+    ])
+  }
+  html.div([class("map-compass"), attribute("aria-hidden", "true")], [
+    svg.svg([attribute("viewBox", "-80 -46 160 92")], [
+      ring(44.0, "compass-ring"),
+      ring(36.0, "compass-ring inner"),
+      ..list.flatten([
+        list.flat_map(diagonals, fn(dg) {
+          arm(dg.0, dg.1, 30.0, 5.0, "compass-arm minor")
+        }),
+        list.flat_map(cardinals, fn(c) {
+          let cls = case c.0 {
+            "N" -> "compass-arm north"
+            _ -> "compass-arm"
+          }
+          arm(c.1, c.2, 44.0, 7.0, cls)
+        }),
+        [svg.circle([class("compass-pin"), attribute("r", "2.5")])],
+        list.map(cardinals, fn(c) {
+          let #(x, y) = scale(iso(c.1.0, c.1.1), 56.0)
+          svg.text(
+            [
+              class(case c.0 {
+                "N" -> "compass-letter north"
+                _ -> "compass-letter"
+              }),
+              attribute("x", num(x)),
+              attribute("y", num(y)),
+              attribute("text-anchor", "middle"),
+              attribute("dominant-baseline", "central"),
+            ],
+            c.0,
+          )
+        }),
+      ])
+    ]),
+  ])
 }
 
 fn button(label: String, title: String, msg: Msg) -> Element(Msg) {
