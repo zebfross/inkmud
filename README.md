@@ -98,6 +98,17 @@ browser (Lustre) ──websocket──▶ Gleam server
   in a tin of oil (which turns up in rooms once lanterns exist). Whenever a
   dark place is built and no lantern is free, one is promised to an unbuilt
   street-level place, which is never dark.
+- **Danger.** Away from the gentle streets, walking into a place may
+  bring something out of the fog: rats underground, stray dogs and
+  footpads on the streets, and further out drowned things, Warrens gangs
+  and rooftop prowlers (`world/danger.gleam`; 10% of entries in wary places,
+  20% in perilous ones, +10% in the dark). Everyone in the room faces it.
+  `fight` (a die plus your best tool: crowbar +2, pole or spade +1),
+  `flee` back the way you came (it may get a blow in), or `raise lantern`
+  at the creatures that fear light. Three wounds and you collapse: you wake
+  at the crossroads with one wound, and what you carried lies where you
+  fell. Wounds heal one per 20 minutes, or all at once with `rest` at the
+  crossroads. `ENCOUNTER_CHANCE=100` forces encounters, for testing.
 - **Three levels.** The streets; below them one connected underground
   (sewers, tunnels, cellars, crypts), with no way further down; and
   upstairs, a single room (a loft, a garret, a belfry) you climb to and come

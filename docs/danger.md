@@ -1,6 +1,21 @@
 # Design: danger
 
-Status: **draft**, nothing built yet. Related: [politics](politics.md).
+Status: **steps 1–3 built** (wounds and resting; common creatures with
+fight, flee and lantern; tools as weapons and items left where you fall).
+Not yet: items drifting back, named creatures, tie-ins. Related:
+[politics](politics.md).
+
+Decisions taken while building:
+- **Healing:** wounds heal in real time (one per 20 minutes), whether or
+  not you're playing.
+- **Footpads:** they don't steal for now; they're just tougher street
+  creatures.
+- **Pictures:** one per kind of creature, drawn once and reused.
+- **Rest:** only at the Lantern Crossroads until halls exist.
+- **Fleeing:** back the way you came. If you didn't come in (you logged in
+  there), any way out counts as fleeing.
+- **Encounter text:** fixed lines per creature, with no model call, so an
+  encounter appears instantly.
 
 ## Why
 
