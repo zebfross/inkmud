@@ -149,7 +149,7 @@ pub fn image_prompt(room: Room) -> String {
 /// doesn't do negation, so "no sky" draws a sky.
 pub fn level(z: Int) -> String {
   case z {
-    0 -> ""
+    0 -> "Outdoors in the city, open sky above. "
     z if z < 0 ->
       "Interior of an underground passage beneath the city, arched stone ceiling overhead, lantern light. "
     _ -> "An upper room or rooftop, high above the city streets. "

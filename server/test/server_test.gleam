@@ -237,19 +237,22 @@ pub fn image_prompt_test() {
   let setting_only =
     types.Room(..room_with(1, []), picture: "A quay at dusk, barges moored.")
   assert art.image_prompt(setting_only)
-    == art.style <> ". A quay at dusk, barges moored."
+    == art.style
+    <> ". Outdoors in the city, open sky above. A quay at dusk, barges moored."
   let close_up_form =
     types.Room(
       ..room_with(2, []),
       picture: "Close-up of a brass key, large in the foreground. Behind: a quay at dusk.",
     )
-  assert art.image_prompt(close_up_form) == art.style <> ". a quay at dusk."
+  assert art.image_prompt(close_up_form)
+    == art.style <> ". Outdoors in the city, open sky above. a quay at dusk."
   let foreground_form =
     types.Room(
       ..room_with(3, []),
       picture: "A quay at dusk. In the foreground: brass key, rope.",
     )
-  assert art.image_prompt(foreground_form) == art.style <> ". A quay at dusk."
+  assert art.image_prompt(foreground_form)
+    == art.style <> ". Outdoors in the city, open sky above. A quay at dusk."
   // No line at all: the place and its first few details.
   let none =
     types.Room(
@@ -259,7 +262,8 @@ pub fn image_prompt_test() {
       items: ["brass key"],
     )
   assert art.image_prompt(none)
-    == art.style <> ". The Quay: wet stones, moored barges, gulls."
+    == art.style
+    <> ". Outdoors in the city, open sky above. The Quay: wet stones, moored barges, gulls."
   // Below or above the streets, the prompt says so before the scene.
   let tunnel =
     types.Room(..room_with(5, []), z: -1, picture: "A vast, still pool.")
@@ -651,4 +655,19 @@ pub fn passage_is_one_thing_test() {
   assert store.pass(db, "Bram", quay, West) == store.Barred("a chained gate")
   // Other ways are untouched.
   assert store.pass(db, "Bram", start, North) == store.Open
+}
+
+/// Street-level places are out under the sky: indoor or underground words
+/// in a street place's name or text send it back to the model.
+pub fn street_is_outdoors_test() {
+  assert builder.indoor_words("Forgotten Tunnels", "A lane.", 0) == ["tunnel"]
+  assert builder.indoor_words(
+      "Moonlit Gilded Grotto",
+      "A passageway under a grand chandelier.",
+      0,
+    )
+    == ["grotto", "chandelier"]
+  assert builder.indoor_words("Tanner's Lane", "Fog fills the lane.", 0) == []
+  // Underground and upstairs are another matter.
+  assert builder.indoor_words("Forgotten Tunnels", "A tunnel.", -1) == []
 }

@@ -932,7 +932,8 @@ pub const up_chance = 20
 /// upstairs.
 fn level_rule(level: Int) -> String {
   case level {
-    0 -> "This place is at street level."
+    0 ->
+      "This place is outdoors, at street level, under the open sky: a street, lane, alley, court, yard, square, quay, bridge or market. Not inside a building, tunnel, cave or grotto: buildings stand around it, and you can only go into one by a way up."
     _ if level < 0 ->
       "This place is below the streets: it must be underground, a sewer, tunnel, cellar, crypt, cistern or cavern. No sky, no streets, no alleys, no shopfronts. There is no way further down."
     _ ->
@@ -973,6 +974,31 @@ fn exit_choices(level: Int, up_ok: Bool) -> String {
     False -> []
   })
   |> string.join("|")
+}
+
+/// A street-level place that's indoors or underground (it should be out
+/// under the sky): words in its name, and in its description or picture.
+pub fn indoor_words(name: String, text: String, level: Int) -> List(String) {
+  case level == 0 {
+    False -> []
+    True -> {
+      let name = string.lowercase(name)
+      let text = string.lowercase(text)
+      let in_name =
+        [
+          "tunnel", "grotto", "cavern", "cave", "depths", "cistern", "crypt",
+          "cellar", "sewer", "hall", "chamber", "corridor",
+        ]
+        |> list.filter(string.contains(name, _))
+      let in_text =
+        [
+          "grotto", "cavern", "corridor", "hallway", "ceiling", "chandelier",
+          "indoors", "you push open",
+        ]
+        |> list.filter(string.contains(text, _))
+      list.unique(list.append(in_name, in_text))
+    }
+  }
 }
 
 /// An underground place that describes streets or sky: not underground.
@@ -1130,10 +1156,26 @@ fn attempt(
         Ok(text) ->
           case parse(text, ctx.back) {
             Ok(proposal) -> {
+              let offered = proposal.exits
               let proposal =
                 Proposal(
                   ..proposal,
                   exits: allowed_exits(proposal.exits, ctx.level, ctx.up_ok),
+                )
+              // Ways it described that this place can't have (a way up from
+              // most streets): the description would promise them.
+              let impossible =
+                offered
+                |> list.filter(fn(e) { !list.contains(proposal.exits, e) })
+                |> list.map(fn(e) { e.0 })
+              // No way on but back, below the top floor: a dead end, though
+              // the description almost always describes ways on.
+              let no_way_on = proposal.exits == [] && ctx.level < highest_level
+              let indoors =
+                indoor_words(
+                  proposal.name,
+                  proposal.description <> " " <> proposal.picture,
+                  ctx.level,
                 )
               let duplicate =
                 list.contains(ctx.taken, string.lowercase(proposal.name))
@@ -1152,73 +1194,111 @@ fn attempt(
                 list.filter(ctx.required, fn(r) {
                   !mentions(proposal.description, r.name)
                 })
-              case duplicate, copied, missing, unmentioned, surfaced {
-                // One retry for a taken name: the model tends to repeat it
-                // however it's told, and `unique_name` can set it apart.
-                True, _, _, _, _ if left == attempts ->
+              case left > 1, no_way_on, impossible, indoors {
+                True, True, _, _ ->
                   retry(
                     text,
-                    "\""
-                      <> proposal.name
-                      <> "\" is already a place in the city; choose a different name",
-                  )
-                _, True, _, _, _ if left > 1 ->
-                  retry(
-                    text,
-                    "the description repeats the previous place's description; describe this new place in your own words",
-                  )
-                _, _, [_, ..], _, _ if left > 1 ->
-                  retry(
-                    text,
-                    "the description doesn't mention "
-                      <> string.join(missing, ", ")
-                      <> " by name; mention each item in the description, or drop it",
-                  )
-                _, _, _, [_, ..], _ if left > 1 ->
-                  retry(
-                    text,
-                    "this place must contain "
-                      <> string.join(
-                      list.map(unmentioned, fn(r) { r.name }),
+                    "there is no way on besides the way back; give 1 to 3 exits, each with \"direction\" exactly one of "
+                      <> string.replace(
+                      exit_choices(ctx.level, ctx.up_ok),
+                      "|",
                       ", ",
                     )
-                      <> "; mention each by its exact name in the description",
+                      <> ", and describe each",
                   )
-                // Accept. On the last try, keep only items the description
-                // shows (a name still taken is set apart by `unique_name`),
-                // and make sure promised items are there and mentioned.
-                // The picture line is trimmed to the setting.
-                _, _, _, _, [_, ..] if left > 1 ->
+                True, _, [_, ..], _ ->
                   retry(
                     text,
-                    "this place is underground, below the streets, but the description mentions "
-                      <> string.join(surfaced, ", ")
-                      <> "; describe a tunnel, sewer, cellar, crypt or cavern instead",
+                    "this place can't have a way "
+                      <> string.join(impossible, " or ")
+                      <> "; leave it out of the exits and the description",
                   )
-                _, _, _, _, _ -> {
-                  let items =
-                    list.filter(proposal.items, mentions(
-                      proposal.description,
-                      _,
-                    ))
-                  let dropped =
-                    list.filter(proposal.items, fn(i) {
-                      !list.contains(items, i)
-                    })
-                  let proposal =
-                    Proposal(..proposal, items:)
-                    |> with_required(ctx.required)
-                  let note = case dropped {
-                    [] -> ""
-                    _ ->
-                      "used, but dropped items the description never mentions: "
-                      <> string.join(dropped, ", ")
+                True, _, _, [_, ..] ->
+                  retry(
+                    text,
+                    "this place is outdoors at street level, under the sky, but it mentions "
+                      <> string.join(indoors, ", ")
+                      <> "; make it a street, lane, alley, court, square or quay, and name it like one",
+                  )
+                _, _, _, _ ->
+                  case duplicate, copied, missing, unmentioned, surfaced {
+                    // One retry for a taken name: the model tends to repeat it
+                    // however it's told, and `unique_name` can set it apart.
+                    True, _, _, _, _ if left == attempts ->
+                      retry(
+                        text,
+                        "\""
+                          <> proposal.name
+                          <> "\" is already a place in the city; choose a different name",
+                      )
+                    _, True, _, _, _ if left > 1 ->
+                      retry(
+                        text,
+                        "the description repeats the previous place's description; describe this new place in your own words",
+                      )
+                    _, _, [_, ..], _, _ if left > 1 ->
+                      retry(
+                        text,
+                        "the description doesn't mention "
+                          <> string.join(missing, ", ")
+                          <> " by name; mention each item in the description, or drop it",
+                      )
+                    _, _, _, [_, ..], _ if left > 1 ->
+                      retry(
+                        text,
+                        "this place must contain "
+                          <> string.join(
+                          list.map(unmentioned, fn(r) { r.name }),
+                          ", ",
+                        )
+                          <> "; mention each by its exact name in the description",
+                      )
+                    // Accept. On the last try, keep only items the description
+                    // shows (a name still taken is set apart by `unique_name`),
+                    // and make sure promised items are there and mentioned.
+                    // The picture line is trimmed to the setting.
+                    _, _, _, _, [_, ..] if left > 1 ->
+                      retry(
+                        text,
+                        "this place is underground, below the streets, but the description mentions "
+                          <> string.join(surfaced, ", ")
+                          <> "; describe a tunnel, sewer, cellar, crypt or cavern instead",
+                      )
+                    _, _, _, _, _ -> {
+                      let items =
+                        list.filter(proposal.items, mentions(
+                          proposal.description,
+                          _,
+                        ))
+                      let dropped =
+                        list.filter(proposal.items, fn(i) {
+                          !list.contains(items, i)
+                        })
+                      let proposal =
+                        Proposal(..proposal, items:)
+                        |> with_required(ctx.required)
+                      let note = case dropped {
+                        [] -> ""
+                        _ ->
+                          "used, but dropped items the description never mentions: "
+                          <> string.join(dropped, ", ")
+                      }
+                      #(
+                        Proposal(
+                          ..proposal,
+                          picture: complete_picture(proposal),
+                        ),
+                        [
+                          store.BuildAttempt(
+                            feedback:,
+                            reply: text,
+                            problem: note,
+                          ),
+                          ..log
+                        ],
+                      )
+                    }
                   }
-                  #(Proposal(..proposal, picture: complete_picture(proposal)), [
-                    store.BuildAttempt(feedback:, reply: text, problem: note),
-                    ..log
-                  ])
-                }
               }
             }
             Error(reason) -> retry(text, reason)
@@ -1431,6 +1511,19 @@ fn parse(text: String, back: Direction) -> Result(Proposal, String) {
   let exits =
     p.exits
     |> list.map(fn(e) { #(string.lowercase(string.trim(e.0)), clean(e.1, 140)) })
+    // "down a rickety ladder": the direction is the first word, and the rest
+    // will do for a hint if there's none.
+    |> list.map(fn(e) {
+      case string.split_once(e.0, " ") {
+        Ok(#(first, rest)) ->
+          case types.parse_direction(first), e.1 {
+            Ok(_), "" -> #(first, clean(rest, 140))
+            Ok(_), hint -> #(first, hint)
+            Error(Nil), _ -> e
+          }
+        Error(Nil) -> e
+      }
+    })
     |> list.filter(fn(e) {
       result.is_ok(types.parse_direction(e.0)) && e.0 != back_name && e.1 != ""
     })
