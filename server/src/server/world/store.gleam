@@ -17,6 +17,93 @@ import sqlight.{type Connection}
 pub type Store =
   Connection
 
+/// What stands in a passage between two cells (a lock, an obstacle) belongs
+/// to the passage, not to either side of it: it bars the way both ways,
+/// and opening it opens it from both sides. A passage is keyed by the cell
+/// at its lower end along its axis (the north, west or lower cell) and the
+/// axis ("ns", "ew" or "ud"). `exit_passages` gives each exit its
+/// passage's lock and obstacle.
+///
+/// Worlds from before this kept locks and obstacles on the exits; they're
+/// moved here once, on opening.
+const passages_schema = "
+create table if not exists passages (
+  x integer not null,
+  y integer not null,
+  z integer not null,
+  axis text not null,
+  lock_id text,
+  lock_desc text,
+  obstacle_kind text,
+  obstacle_desc text,
+  primary key (x, y, z, axis)
+);
+create view if not exists exit_passages as
+select e.room_id, e.direction, e.hint, e.target_region, e.target_id,
+       p.lock_id, p.lock_desc, p.obstacle_kind, p.obstacle_desc
+from exits e
+join rooms r on r.id = e.room_id
+left join passages p
+  on p.x = r.x - (e.direction = 'west')
+ and p.y = r.y - (e.direction = 'north')
+ and p.z = r.z - (e.direction = 'down')
+ and p.axis = case when e.direction in ('north', 'south') then 'ns'
+                   when e.direction in ('east', 'west') then 'ew'
+                   else 'ud' end;
+insert into passages (x, y, z, axis, lock_id, lock_desc)
+select r.x - (e.direction = 'west'), r.y - (e.direction = 'north'),
+       r.z - (e.direction = 'down'),
+       case when e.direction in ('north', 'south') then 'ns'
+            when e.direction in ('east', 'west') then 'ew' else 'ud' end,
+       e.lock_id, e.lock_desc
+from exits e join rooms r on r.id = e.room_id
+where e.lock_id is not null and r.x is not null
+on conflict do update set lock_id = excluded.lock_id, lock_desc = excluded.lock_desc;
+insert into passages (x, y, z, axis, obstacle_kind, obstacle_desc)
+select r.x - (e.direction = 'west'), r.y - (e.direction = 'north'),
+       r.z - (e.direction = 'down'),
+       case when e.direction in ('north', 'south') then 'ns'
+            when e.direction in ('east', 'west') then 'ew' else 'ud' end,
+       e.obstacle_kind, e.obstacle_desc
+from exits e join rooms r on r.id = e.room_id
+where e.obstacle_kind is not null and r.x is not null
+on conflict do update set obstacle_kind = excluded.obstacle_kind,
+  obstacle_desc = excluded.obstacle_desc;
+update exits set lock_id = null, lock_desc = null, obstacle_kind = null,
+  obstacle_desc = null
+where lock_id is not null or obstacle_kind is not null;
+"
+
+/// The passage through `room_id`'s way `d`, as its key: #(x, y, z, axis).
+fn passage(store: Store, room_id: Int, d: Direction) -> List(sqlight.Value) {
+  let #(x, y, z) = case
+    sqlight.query(
+      "select x, y, z from rooms where id = ?",
+      store,
+      [sqlight.int(room_id)],
+      {
+        use x <- decode.field(0, decode.int)
+        use y <- decode.field(1, decode.int)
+        use z <- decode.field(2, decode.int)
+        decode.success(#(x, y, z))
+      },
+    )
+  {
+    Ok([cell]) -> cell
+    _ -> #(0, 0, 0)
+  }
+  let #(x, y, z) = case d {
+    types.North | types.West | types.Down -> types.step(#(x, y, z), d)
+    _ -> #(x, y, z)
+  }
+  let axis = case d {
+    types.North | types.South -> "ns"
+    types.East | types.West -> "ew"
+    types.Up | types.Down -> "ud"
+  }
+  [sqlight.int(x), sqlight.int(y), sqlight.int(z), sqlight.text(axis)]
+}
+
 const schema = "
 create table if not exists regions (
   id text primary key,
@@ -154,6 +241,7 @@ pub fn open(path: String) -> Store {
       }
     }
   })
+  let assert Ok(Nil) = sqlight.exec(passages_schema, conn)
   let assert Ok(Nil) =
     sqlight.exec(
       "create unique index if not exists rooms_cell on rooms (x, y, z);",
@@ -185,7 +273,7 @@ pub fn wipe_and(store: Store, seed: fn(Store) -> Int) -> Int {
     store,
     "begin;
     delete from caches; delete from map_marks;
-    delete from pending_items; delete from closeups; delete from room_debug; delete from visits; delete from items; delete from players; delete from exits;
+    delete from pending_items; delete from closeups; delete from room_debug; delete from visits; delete from items; delete from players; delete from exits; delete from passages;
     delete from rooms; delete from regions;
     delete from sqlite_sequence;
     commit;",
@@ -404,7 +492,7 @@ fn exits(store: Store, room_id: Int) -> List(Exit) {
     decode.success(#(direction, hint, target_region, target, #(lock, obstacle)))
   }
   sqlight.query(
-    "select direction, hint, target_region, target_id, lock_desc, obstacle_kind, obstacle_desc from exits where room_id = ?",
+    "select direction, hint, target_region, target_id, lock_desc, obstacle_kind, obstacle_desc from exit_passages where room_id = ?",
     store,
     [sqlight.int(room_id)],
     decoder,
@@ -1094,14 +1182,10 @@ pub fn lock_exit(
 ) -> Nil {
   let assert Ok(_) =
     sqlight.query(
-      "update exits set lock_id = ?, lock_desc = ? where room_id = ? and direction = ?",
+      "insert into passages (lock_id, lock_desc, x, y, z, axis) values (?, ?, ?, ?, ?, ?)
+       on conflict do update set lock_id = excluded.lock_id, lock_desc = excluded.lock_desc",
       store,
-      [
-        sqlight.text(lock_id),
-        sqlight.text(desc),
-        sqlight.int(room_id),
-        sqlight.text(types.direction_name(d)),
-      ],
+      [sqlight.text(lock_id), sqlight.text(desc), ..passage(store, room_id, d)],
       decode.success(Nil),
     )
   Nil
@@ -1117,7 +1201,7 @@ pub fn pass(
 ) -> Passage {
   let lock =
     sqlight.query(
-      "select lock_id, lock_desc from exits where room_id = ? and direction = ? and lock_id is not null",
+      "select lock_id, lock_desc from exit_passages where room_id = ? and direction = ? and lock_id is not null",
       store,
       [sqlight.int(room_id), sqlight.text(types.direction_name(d))],
       {
@@ -1150,7 +1234,7 @@ pub fn pass(
             )
           let assert Ok(_) =
             sqlight.query(
-              "update exits set lock_id = null, lock_desc = null where lock_id = ?",
+              "update passages set lock_id = null, lock_desc = null where lock_id = ?",
               store,
               [sqlight.text(lock_id)],
               decode.success(Nil),
@@ -1172,7 +1256,7 @@ fn past_obstacle(
 ) -> Passage {
   let obstacle =
     sqlight.query(
-      "select obstacle_kind, obstacle_desc from exits where room_id = ? and direction = ? and obstacle_kind is not null",
+      "select obstacle_kind, obstacle_desc from exit_passages where room_id = ? and direction = ? and obstacle_kind is not null",
       store,
       [sqlight.int(room_id), sqlight.text(types.direction_name(d))],
       {
@@ -1197,9 +1281,9 @@ fn past_obstacle(
         Ok([tool]) -> {
           let assert Ok(_) =
             sqlight.query(
-              "update exits set obstacle_kind = null, obstacle_desc = null where room_id = ? and direction = ?",
+              "update passages set obstacle_kind = null, obstacle_desc = null where x = ? and y = ? and z = ? and axis = ?",
               store,
-              [sqlight.int(room_id), sqlight.text(types.direction_name(d))],
+              passage(store, room_id, d),
               decode.success(Nil),
             )
           Cleared(tool:, obstacle: o)
@@ -1219,13 +1303,13 @@ pub fn set_obstacle(
 ) -> Nil {
   let assert Ok(_) =
     sqlight.query(
-      "update exits set obstacle_kind = ?, obstacle_desc = ? where room_id = ? and direction = ?",
+      "insert into passages (obstacle_kind, obstacle_desc, x, y, z, axis) values (?, ?, ?, ?, ?, ?)
+       on conflict do update set obstacle_kind = excluded.obstacle_kind, obstacle_desc = excluded.obstacle_desc",
       store,
       [
         sqlight.text(obstacle.kind),
         sqlight.text(obstacle.desc),
-        sqlight.int(room_id),
-        sqlight.text(types.direction_name(d)),
+        ..passage(store, room_id, d)
       ],
       decode.success(Nil),
     )
@@ -1515,7 +1599,7 @@ pub fn any_lights(store: Store) -> Bool {
 /// promised that anyone can reach without one. Nearest the centre first.
 pub fn street_cell_for_light(store: Store) -> Option(types.Cell) {
   sqlight.query(
-    "select r.x, r.y, r.z, e.direction from exits e join rooms r on r.id = e.room_id
+    "select r.x, r.y, r.z, e.direction from exit_passages e join rooms r on r.id = e.room_id
      where r.z = 0 and r.dark = 0 and e.target_id is null and e.lock_id is null
        and e.direction not in ('up', 'down')
      order by abs(r.x) + abs(r.y), r.id",
@@ -1690,7 +1774,7 @@ pub fn marks(store: Store, player: String) -> List(types.Cell) {
 /// (unlocked, unblocked) of a built room. Where a map's treasure can go.
 pub fn reachable_unbuilt(store: Store) -> List(types.Cell) {
   sqlight.query(
-    "select r.x, r.y, r.z, e.direction from exits e join rooms r on r.id = e.room_id
+    "select r.x, r.y, r.z, e.direction from exit_passages e join rooms r on r.id = e.room_id
      where e.target_id is null and e.lock_id is null and e.obstacle_kind is null",
     store,
     [],

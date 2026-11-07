@@ -610,3 +610,45 @@ pub fn wounds_test() {
   assert store.inventory(db, "Ada") == []
   assert store.room_items(db, den) == ["tin of lamp oil"]
 }
+
+/// A lock or an obstacle belongs to the passage, not to one side of it: it
+/// bars the way both ways, and opening it from one side opens both.
+pub fn passage_is_one_thing_test() {
+  let db = store.open(":memory:")
+  let start = seed.run(db)
+  let rubble = types.Obstacle(kind: "spade", desc: "a heap of fallen rubble")
+  store.set_obstacle(db, start, East, rubble)
+  let back =
+    store.NewExit(
+      direction: West,
+      hint: "back to the crossroads",
+      target_region: "lantern_ward",
+      target: Some(start),
+    )
+  let assert Ok(quay) =
+    store.insert_room(
+      db,
+      "drowned_quarter",
+      "Quay",
+      "A quay.",
+      [],
+      ["spade"],
+      [back],
+      #(1, 0, 0),
+    )
+  // Blocked from the far side too, and both rooms' views show it.
+  assert store.pass(db, "Ada", quay, West) == store.Obstructed(rubble)
+  let assert Ok(q) = store.load_room(db, quay)
+  let assert Ok(Exit(obstacle: Some(_), ..)) = types.find_exit(q, West)
+  // Cleared from the far side: open from the near side as well.
+  store.set_item_role(db, quay, "spade", "tool", Some("spade"))
+  let assert Ok(_) = store.take_item(db, quay, "Ada", "spade")
+  assert store.pass(db, "Ada", quay, West) == store.Cleared("spade", rubble)
+  assert store.pass(db, "Bram", start, East) == store.Open
+  // A lock the same way: barred from both sides.
+  store.lock_exit(db, quay, West, "lock-quay", "a chained gate")
+  assert store.pass(db, "Bram", start, East) == store.Barred("a chained gate")
+  assert store.pass(db, "Bram", quay, West) == store.Barred("a chained gate")
+  // Other ways are untouched.
+  assert store.pass(db, "Bram", start, North) == store.Open
+}
