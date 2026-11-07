@@ -26,7 +26,35 @@ pub type Exit {
     /// Blocked by something a tool gets you past (a rusted grate, a sheer
     /// drop). Cleared for good by anyone carrying a tool of its kind.
     obstacle: Option(Obstacle),
+    /// A door between a street and a building (or between two buildings):
+    /// going through it is going inside, or back out.
+    door: Bool,
   )
+}
+
+/// What kind of place a room is, decided by the engine when it's built (the
+/// model only describes it): out under the sky, inside a building, or
+/// underground. Going between outside and inside is always through a door.
+pub type Setting {
+  Outdoors
+  Inside
+  Below
+}
+
+pub fn setting_name(s: Setting) -> String {
+  case s {
+    Outdoors -> "outdoors"
+    Inside -> "inside"
+    Below -> "below"
+  }
+}
+
+pub fn parse_setting(text: String) -> Setting {
+  case text {
+    "inside" -> Inside
+    "below" -> Below
+    _ -> Outdoors
+  }
 }
 
 pub type Obstacle {
@@ -111,6 +139,10 @@ pub type Room {
     /// Pitch dark: without a lit light you see nothing here, and can only
     /// feel your way back toward somewhere lit.
     dark: Bool,
+    setting: Setting,
+    /// The building an inside place belongs to: the id of the room you
+    /// first come into through its door.
+    building: Option(Int),
   )
 }
 

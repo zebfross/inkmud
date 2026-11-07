@@ -111,10 +111,18 @@ browser (Lustre) ──websocket──▶ Gleam server
   crossroads. `ENCOUNTER_CHANCE=100` forces encounters, for testing.
 - **Three levels.** The streets; below them one connected underground
   (sewers, tunnels, cellars, crypts), with no way further down; and
-  upstairs, a single room (a loft, a garret, a belfry) you climb to and come
-  back down from. Ways up are rare (`builder.up_chance`). The engine drops
-  any way out a level doesn't allow, and each picture prompt says which
-  level it's on.
+  upstairs, a single room you climb to and come back down from. The engine
+  drops any way out a level doesn't allow, and each picture prompt says
+  where the place is.
+- **Outdoors, indoors, below.** The engine decides what kind of place each
+  room is; the top bar shows it. Streets are always out under the sky, and
+  you go into a building only through a door (a door icon on the picture's
+  label; "You go inside."). Some streets have one (`builder.door_chance`).
+  A building has up to three rooms on its floor (`builder.building_rooms`),
+  maybe stairs up to a loft (`stairs_chance`) or steps down to a cellar.
+  Up from a street (a fire escape, a belfry ladder) is a rooftop. Doors
+  belong to the passage, like locks, and are never locked or blocked by the
+  builder. Nothing attacks you indoors.
 - **Your map** (the Map button) shows the rooms you've visited at their grid
   positions, each floor a tilted plane stacked above the one below.
 - **Engine owns the truth.** The model proposes rooms in a fixed JSON shape;

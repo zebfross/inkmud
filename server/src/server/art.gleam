@@ -139,7 +139,7 @@ fn room_job(store: Store, room: Room) -> Job {
 /// well but not a scene plus small objects (a strong landmark like a gas
 /// lamp always won). Items get their own close-ups when examined.
 pub fn image_prompt(room: Room) -> String {
-  style <> ". " <> level(room.z) <> setting(room)
+  style <> ". " <> level(room) <> setting(room)
 }
 
 /// Where the place is, said before the scene so the 77-token limit can't
@@ -147,12 +147,18 @@ pub fn image_prompt(room: Room) -> String {
 /// can read as a dockside, when the place is a cavern under the streets.
 /// Worded as what's there, never "no sky": the image model's text encoder
 /// doesn't do negation, so "no sky" draws a sky.
-pub fn level(z: Int) -> String {
-  case z {
-    0 -> "Outdoors in the city, open sky above. "
-    z if z < 0 ->
+pub fn level(room: Room) -> String {
+  case room.setting, room.z {
+    _, z if z < 0 ->
       "Interior of an underground passage beneath the city, arched stone ceiling overhead, lantern light. "
-    _ -> "An upper room or rooftop, high above the city streets. "
+    types.Below, _ ->
+      "Interior of an underground passage beneath the city, arched stone ceiling overhead, lantern light. "
+    types.Inside, 0 ->
+      "Interior of a building, walls and a ceiling, lamplight and candlelight. "
+    types.Inside, _ ->
+      "Interior of an upper room under the roof, walls and a sloping ceiling, lamplight. "
+    types.Outdoors, 0 -> "Outdoors in the city, open sky above. "
+    types.Outdoors, _ -> "On a rooftop high above the city streets, open sky. "
   }
 }
 

@@ -214,8 +214,7 @@ type Context {
     required: List(store.Pending),
     /// Height of the new place: below 0 is underground.
     level: Int,
-    /// Whether this street-level place may have a way up (rarely).
-    up_ok: Bool,
+    shape: Shape,
   )
 }
 
@@ -261,6 +260,20 @@ fn join(store: Store, from: Room, d: Direction, to: Int) -> Built {
               Some(from.id),
             ),
           )
+      }
+    Error(Nil) -> Nil
+  }
+  case store.load_room(store, to) {
+    Ok(other) ->
+      case
+        needs_door(#(from.setting, from.building, from.z), #(
+          other.setting,
+          other.building,
+          other.z,
+        ))
+      {
+        True -> store.set_door(store, from.id, d)
+        False -> Nil
       }
     Error(Nil) -> Nil
   }
@@ -315,8 +328,7 @@ fn invent(
     list.flatten([store.pending_at(store, target), gift, treasure_map])
   // Upstairs is a dead end: nothing to lock there.
   let want_lock = level < 1 && int.random(100) < odds.lock
-  // Ways up are rare: only now and then may a street place have one.
-  let up_ok = level == 0 && int.random(100) < up_chance
+  let shape = shape(store, from, exit, target)
   let prompt =
     prompt(
       store,
@@ -328,7 +340,7 @@ fn invent(
       required,
       want_lock,
       level,
-      up_ok,
+      shape,
       dark,
     )
   let ctx =
@@ -340,7 +352,7 @@ fn invent(
       from_description: from.description,
       required:,
       level:,
-      up_ok:,
+      shape:,
     )
   let #(proposal, build_log) = propose(ctx, attempts)
   // The model can insist on a name through every retry; and two rooms built
@@ -363,7 +375,18 @@ fn invent(
     })
   let new_exits =
     list.flatten([
-      [NewExit(back, "back toward " <> from.name, from.region, Some(from.id))],
+      [
+        NewExit(
+          back,
+          case exit.door, shape.setting {
+            True, types.Inside -> "the door back out to " <> from.name
+            True, _ -> "the door back into " <> from.name
+            False, _ -> "back toward " <> from.name
+          },
+          from.region,
+          Some(from.id),
+        ),
+      ],
       list.map(proposed, fn(e) {
         // A way out into a built cell leads to the room that's there.
         let target =
@@ -403,6 +426,23 @@ fn invent(
       }
     Ok(id) -> {
       store.set_picture(store, id, proposal.picture)
+      // What kind of place it is; a new building is known by its first room.
+      let building = case shape.setting, shape.building {
+        types.Inside, None -> Some(id)
+        types.Inside, b -> b
+        _, _ -> None
+      }
+      store.set_setting(store, id, shape.setting, building)
+      case shape.door {
+        Some(d) ->
+          case
+            list.any(proposal.exits, fn(e) { e.0 == types.direction_name(d) })
+          {
+            True -> store.set_door(store, id, d)
+            False -> Nil
+          }
+        None -> Nil
+      }
       // Promised items get their role (a key, and the lock it opens); the
       // model's own items are valuables (the column's default).
       list.each(required, fn(r) {
@@ -445,8 +485,20 @@ fn invent(
           )
         _, _ -> proposal
       }
+      // A door is never locked or blocked by the builder: a shop you can see
+      // is a shop you can go into.
+      let unbarred = case shape.door {
+        Some(d) ->
+          Proposal(
+            ..proposal,
+            exits: list.filter(proposal.exits, fn(e) {
+              e.0 != types.direction_name(d)
+            }),
+          )
+        None -> proposal
+      }
       let lock_note =
-        place_lock(store, id, target, proposal, neighbours, back, from)
+        place_lock(store, id, target, unbarred, neighbours, back, from)
       // Sometimes (and not as well as a lock) a way out is blocked by an
       // obstacle a tool gets you past.
       let obstacle_note = case
@@ -458,7 +510,7 @@ fn invent(
             client,
             id,
             target,
-            proposal,
+            unbarred,
             neighbours,
             back,
             from,
@@ -522,6 +574,22 @@ fn invent(
             _, _ -> Error(Nil)
           }
         })
+      // A way into a neighbour of another kind (a street beside a building,
+      // two buildings side by side) is a door.
+      list.each(neighbours, fn(n) {
+        let #(d, other) = n
+        case
+          list.any(new_exits, fn(e) { e.direction == d })
+          && needs_door(#(shape.setting, building, target.2), #(
+            other.setting,
+            other.building,
+            other.z,
+          ))
+        {
+          True -> store.set_door(store, id, d)
+          False -> Nil
+        }
+      })
       Built(room_id: id, new: True, touched: [from.id, ..touched])
     }
   }
@@ -924,62 +992,199 @@ pub const lowest_level = -1
 
 pub const highest_level = 1
 
-/// Percent of street-level places that may have a way up.
+/// Percent of street places that may have a way up (a fire escape, a
+/// belfry ladder) onto a rooftop.
 pub const up_chance = 20
 
-/// What a place at this height has to be. Going down from the streets
-/// leads underground, never to another street; going up leads to one room
-/// upstairs.
-fn level_rule(level: Int) -> String {
-  case level {
-    0 ->
-      "This place is outdoors, at street level, under the open sky: a street, lane, alley, court, yard, square, quay, bridge or market. Not inside a building, tunnel, cave or grotto: buildings stand around it, and you can only go into one by a way up."
-    _ if level < 0 ->
-      "This place is below the streets: it must be underground, a sewer, tunnel, cellar, crypt, cistern or cavern. No sky, no streets, no alleys, no shopfronts. There is no way further down."
-    _ ->
-      "This place is upstairs, one floor above the street: an upper room, a garret, a loft, a belfry or a rooftop reached from below, looking down on the city. There is no way further up and no way on: the only way out is back down."
+/// Percent of street places with a door into a building.
+pub const door_chance = 40
+
+/// Percent of buildings with stairs up to a floor above.
+pub const stairs_chance = 50
+
+/// Rooms a building has on the ground floor, at most.
+pub const building_rooms = 3
+
+/// What the engine decides about a new place before the model describes
+/// it: what kind of place it is, which ways out it may have, and whether
+/// one of them is a door into a building.
+pub type Shape {
+  Shape(
+    setting: types.Setting,
+    /// An inside place's building; `None` for a new building (it takes the
+    /// new room's id) and for places outside.
+    building: Option(Int),
+    /// The player came through a door to get here.
+    via_door: Bool,
+    /// Directions the model may give new ways out in.
+    choices: List(String),
+    /// A way out the engine wants to be a door into a building.
+    door: Option(Direction),
+    /// At most this many new ways out on the same level (a building's
+    /// rooms are few).
+    rooms_left: Int,
+  )
+}
+
+/// Outdoors or inside (and which building) for the place beyond `from`'s
+/// way out. Below the streets is always below. At street level, a door
+/// takes you from outside to inside or back, and otherwise you stay as you
+/// were; coming up from below brings you out onto a street. Upstairs is in
+/// the same building as the room below it, or a rooftop above a street.
+pub fn setting_for(
+  from: #(types.Setting, Option(Int), Int),
+  through_door: Bool,
+  level: Int,
+) -> #(types.Setting, Option(Int)) {
+  let #(setting, building, id) = from
+  let building = option.or(building, Some(id))
+  case level, setting, through_door {
+    l, _, _ if l < 0 -> #(types.Below, None)
+    _, types.Inside, False -> #(types.Inside, building)
+    _, types.Inside, True -> #(types.Outdoors, None)
+    0, types.Outdoors, True -> #(types.Inside, None)
+    _, _, _ -> #(types.Outdoors, None)
   }
 }
 
-/// The ways out a place at this level may have (the way back is separate).
-/// Upstairs has none; the underground has no way further down; and only
-/// some street places (`up_ok`) have a way up.
-pub fn allowed_exits(
-  exits: List(#(String, String)),
-  level: Int,
-  up_ok: Bool,
-) -> List(#(String, String)) {
+/// The directions a place may have new ways out in. Upstairs has none; the
+/// underground has no way further down. `across` (other places on the same
+/// level) and `up` are decided per place.
+pub fn choices(level: Int, across: Bool, up: Bool) -> List(String) {
   case level >= highest_level {
     True -> []
     False ->
-      list.filter(exits, fn(e) {
-        case e.0 {
-          "down" -> level > lowest_level
-          "up" -> level < 0 || up_ok
-          _ -> True
-        }
-      })
+      list.flatten([
+        case across {
+          True -> ["north", "south", "east", "west"]
+          False -> []
+        },
+        case up || level < 0 {
+          True -> ["up"]
+          False -> []
+        },
+        case level > lowest_level {
+          True -> ["down"]
+          False -> []
+        },
+      ])
   }
 }
 
-/// The directions to offer the model for a place at this level.
-fn exit_choices(level: Int, up_ok: Bool) -> String {
-  ["north", "south", "east", "west"]
-  |> list.append(case level < 0 || up_ok {
-    True -> ["up"]
-    False -> []
-  })
-  |> list.append(case level > lowest_level {
-    True -> ["down"]
-    False -> []
-  })
-  |> string.join("|")
+/// At most `left` ways out on the same level (north, south, east, west);
+/// ways up and down are kept.
+pub fn keep_across(
+  exits: List(#(String, String)),
+  left: Int,
+) -> List(#(String, String)) {
+  case exits {
+    [] -> []
+    [e, ..rest] ->
+      case e.0 == "up" || e.0 == "down" {
+        True -> [e, ..keep_across(rest, left)]
+        False if left > 0 -> [e, ..keep_across(rest, left - 1)]
+        False -> keep_across(rest, left)
+      }
+  }
+}
+
+/// Two neighbouring places joined by a way through need a door between
+/// them when one is a street and the other a building, or they're two
+/// buildings. Settings and buildings, and heights (only side by side).
+pub fn needs_door(
+  a: #(types.Setting, Option(Int), Int),
+  b: #(types.Setting, Option(Int), Int),
+) -> Bool {
+  case a, b {
+    #(_, _, za), #(_, _, zb) if za != zb -> False
+    #(types.Below, _, _), _ | _, #(types.Below, _, _) -> False
+    #(types.Inside, ba, _), #(types.Inside, bb, _) -> ba != bb
+    #(sa, _, _), #(sb, _, _) -> sa != sb
+  }
+}
+
+fn shape(store: Store, from: Room, exit: Exit, target: types.Cell) -> Shape {
+  let level = target.2
+  let #(setting, building) =
+    setting_for(#(from.setting, from.building, from.id), exit.door, level)
+  let back = types.opposite(exit.direction)
+  // How many more rooms beside this one the building may have: rooms built
+  // and ways already leading to rooms to come both count.
+  let #(rooms_left, up) = case setting, building {
+    types.Inside, Some(b) -> {
+      let #(ground, upstairs) = store.building_rooms(store, b)
+      let #(open_across, open_up) = store.building_open_ways(store, b)
+      #(
+        building_rooms - ground - 1 - open_across,
+        upstairs + open_up == 0 && level == 0 && int.random(100) < stairs_chance,
+      )
+    }
+    // The first room of a new building.
+    types.Inside, None -> #(building_rooms - 1, int.random(100) < stairs_chance)
+    types.Outdoors, _ -> #(3, level == 0 && int.random(100) < up_chance)
+    types.Below, _ -> #(3, True)
+  }
+  let choices = choices(level, rooms_left > 0, up)
+  // Now and then a street has a door into a building, on a side where
+  // nothing is built yet.
+  let door = case
+    setting == types.Outdoors && level == 0 && int.random(100) < door_chance
+  {
+    False -> None
+    True ->
+      [types.North, types.South, types.East, types.West]
+      |> list.filter(fn(d) {
+        d != back && store.room_at(store, types.step(target, d)) == None
+      })
+      |> list.shuffle
+      |> list.first
+      |> option.from_result
+  }
+  Shape(setting:, building:, via_door: exit.door, choices:, door:, rooms_left:)
+}
+
+/// What a place of this kind, at this height, has to be.
+fn place_rule(shape: Shape, level: Int, from: Room) -> String {
+  case shape.setting, level {
+    types.Below, _ ->
+      "This place is below the streets: it must be underground, a sewer, tunnel, cellar, crypt, cistern or cavern. No sky, no streets, no alleys, no shopfronts. There is no way further down."
+    types.Outdoors, 0 ->
+      "This place is outdoors, at street level, under the open sky: a street, lane, alley, court, yard, square, quay, bridge or market. Not inside a building, tunnel, cave or grotto: buildings stand around it, and you only go into one through its door."
+      <> case shape.via_door {
+        True ->
+          " The player has just stepped out of "
+          <> from.name
+          <> " through its door."
+        False -> ""
+      }
+    types.Outdoors, _ ->
+      "This place is a rooftop, high above the street, open to the sky: reached by a fire escape, an outside stair or a belfry ladder, looking out over the city. There is no way further up and no way on: the only way out is back down."
+    types.Inside, 0 ->
+      "This place is inside a building: a shop, inn, tavern, workshop, pawnshop, apothecary, chapel, warehouse or house. Walls and a ceiling around you; lamps or candles light it; no open sky."
+      <> case shape.via_door {
+        True ->
+          " The player has just come in from the street through its door (the way back)."
+        False ->
+          " It is a further room of the same building as "
+          <> from.name
+          <> " (a back room, a storeroom, a workroom, a parlour)."
+      }
+    types.Inside, _ ->
+      "This place is upstairs inside the building below ("
+      <> from.name
+      <> "): an upper room, a garret, a loft or a belfry, reached by its stairs. Walls and a ceiling around you. There is no way further up and no way on: the only way out is back down."
+  }
 }
 
 /// A street-level place that's indoors or underground (it should be out
 /// under the sky): words in its name, and in its description or picture.
-pub fn indoor_words(name: String, text: String, level: Int) -> List(String) {
-  case level == 0 {
+pub fn indoor_words(
+  name: String,
+  text: String,
+  setting: types.Setting,
+  level: Int,
+) -> List(String) {
+  case setting == types.Outdoors && level == 0 {
     False -> []
     True -> {
       let name = string.lowercase(name)
@@ -998,6 +1203,18 @@ pub fn indoor_words(name: String, text: String, level: Int) -> List(String) {
         |> list.filter(string.contains(text, _))
       list.unique(list.append(in_name, in_text))
     }
+  }
+}
+
+/// A place inside a building that describes being out under the sky.
+pub fn outdoor_words(text: String, setting: types.Setting) -> List(String) {
+  case setting {
+    types.Inside -> {
+      let text = string.lowercase(text)
+      ["open sky", "under the sky", "beneath the sky", "starlit sky"]
+      |> list.filter(string.contains(text, _))
+    }
+    _ -> []
   }
 }
 
@@ -1023,7 +1240,7 @@ fn prompt(
   required: List(store.Pending),
   want_lock: Bool,
   level: Int,
-  up_ok: Bool,
+  shape: Shape,
   dark: Bool,
 ) -> String {
   let used = case list.take(list.reverse(store.room_names(store)), 40) {
@@ -1074,7 +1291,7 @@ fn prompt(
   <> "."
   <> around
   <> "\n"
-  <> level_rule(level)
+  <> place_rule(shape, level, from)
   <> case dark {
     True ->
       " It is pitch dark here, with no lamps or candles burning: describe what the player's own lantern, held up, reveals in its small circle of light."
@@ -1087,22 +1304,50 @@ fn prompt(
   <> "\"description\": \"2-4 sentences, second person present tense\", "
   <> "\"picture\": \"one plain sentence, under 25 words, describing what a painting of this place shows (the place itself, its light and its main features); nothing that isn't in the description\", "
   <> "\"features\": [\"3-5 short visual details, including any objects here\"], "
-  <> case level >= highest_level {
-    True -> "\"exits\": []}"
-    False ->
+  <> case shape.choices {
+    [] -> "\"exits\": []}"
+    choices ->
       "\"exits\": [{\"direction\": \""
-      <> exit_choices(level, up_ok)
+      <> string.join(choices, "|")
       <> "\", \"hint\": \"short phrase: what you see of that way out\"}]}"
   }
   <> "\nThe description must mention every visual detail, and should hint at each way out without listing directions."
   <> " A way down must look like a way down (stairs, a ladder, a grate, a hatch, a hole) and a way up like a way up."
-  <> case level >= highest_level, want_lock, up_ok {
-    True, _, _ ->
-      "\nGive no exits: the only way out is back down the way the player came."
-    _, True, _ -> ""
-    _, False, True ->
-      "\nGive 1 to 3 exits. This place may have a way up (stairs inside a building, a fire escape, a belfry ladder), but only if it fits."
-    _, False, False -> "\nGive 1 to 3 exits."
+  <> case shape.choices, want_lock {
+    [], _ ->
+      "\nGive no exits: the only way out is back the way the player came."
+    _, True -> ""
+    _, False ->
+      case shape.setting {
+        types.Inside ->
+          "\nGive 0 to 2 exits: further rooms of this building"
+          <> case list.contains(shape.choices, "up") {
+            True -> ", a staircase up to the floor above"
+            False -> ""
+          }
+          <> case list.contains(shape.choices, "down") {
+            True -> ", or steps down to a cellar"
+            False -> ""
+          }
+          <> ". None is fine: a small place you leave the way you came."
+        _ ->
+          "\nGive 1 to 3 exits."
+          <> case
+            shape.setting == types.Outdoors
+            && list.contains(shape.choices, "up")
+          {
+            True ->
+              " This place may have a way up onto a rooftop (a fire escape, an outside stair, a belfry ladder), but only if it fits."
+            False -> ""
+          }
+      }
+  }
+  <> case shape.door {
+    Some(d) ->
+      "\nOne of the exits must be \""
+      <> types.direction_name(d)
+      <> "\": the door into a building beside this place (a shop, inn, tavern, workshop, pawnshop, apothecary, chapel, warehouse or house). Its hint names the building and its door, and the description mentions that door."
+    None -> ""
   }
   <> " Do not use the direction \""
   <> types.direction_name(back)
@@ -1160,7 +1405,11 @@ fn attempt(
               let proposal =
                 Proposal(
                   ..proposal,
-                  exits: allowed_exits(proposal.exits, ctx.level, ctx.up_ok),
+                  exits: proposal.exits
+                    |> list.filter(fn(e) {
+                      list.contains(ctx.shape.choices, e.0)
+                    })
+                    |> keep_across(ctx.shape.rooms_left),
                 )
               // Ways it described that this place can't have (a way up from
               // most streets): the description would promise them.
@@ -1170,12 +1419,29 @@ fn attempt(
                 |> list.map(fn(e) { e.0 })
               // No way on but back, below the top floor: a dead end, though
               // the description almost always describes ways on.
-              let no_way_on = proposal.exits == [] && ctx.level < highest_level
+              let no_way_on =
+                proposal.exits == []
+                && ctx.shape.choices != []
+                && ctx.shape.setting != types.Inside
+              // The door the engine asked for, missing.
+              let no_door = case ctx.shape.door {
+                Some(d) ->
+                  !list.any(proposal.exits, fn(e) {
+                    e.0 == types.direction_name(d)
+                  })
+                None -> False
+              }
               let indoors =
                 indoor_words(
                   proposal.name,
                   proposal.description <> " " <> proposal.picture,
+                  ctx.shape.setting,
                   ctx.level,
+                )
+              let outdoorsy =
+                outdoor_words(
+                  proposal.description <> " " <> proposal.picture,
+                  ctx.shape.setting,
                 )
               let duplicate =
                 list.contains(ctx.taken, string.lowercase(proposal.name))
@@ -1194,13 +1460,42 @@ fn attempt(
                 list.filter(ctx.required, fn(r) {
                   !mentions(proposal.description, r.name)
                 })
-              case left > 1, no_way_on, impossible, indoors {
+              let wrong_setting = case indoors, outdoorsy {
+                [_, ..], _ ->
+                  Some(
+                    "this place is outdoors at street level, under the sky, but it mentions "
+                    <> string.join(indoors, ", ")
+                    <> "; make it a street, lane, alley, court, square or quay, and name it like one",
+                  )
+                _, [_, ..] ->
+                  Some(
+                    "this place is inside a building, with a ceiling, but it mentions "
+                    <> string.join(outdoorsy, ", ")
+                    <> "; describe the room indoors",
+                  )
+                _, _ -> None
+              }
+              let door_problem = case ctx.shape.door, no_door {
+                Some(d), True ->
+                  Some(
+                    "one exit must be \""
+                    <> types.direction_name(d)
+                    <> "\", the door into a building beside this place; add it, with a hint naming the building, and mention the door in the description",
+                  )
+                _, _ -> None
+              }
+              case
+                left > 1,
+                no_way_on,
+                impossible,
+                option.or(wrong_setting, door_problem)
+              {
                 True, True, _, _ ->
                   retry(
                     text,
                     "there is no way on besides the way back; give 1 to 3 exits, each with \"direction\" exactly one of "
                       <> string.replace(
-                      exit_choices(ctx.level, ctx.up_ok),
+                      string.join(ctx.shape.choices, ", "),
                       "|",
                       ", ",
                     )
@@ -1213,13 +1508,7 @@ fn attempt(
                       <> string.join(impossible, " or ")
                       <> "; leave it out of the exits and the description",
                   )
-                True, _, _, [_, ..] ->
-                  retry(
-                    text,
-                    "this place is outdoors at street level, under the sky, but it mentions "
-                      <> string.join(indoors, ", ")
-                      <> "; make it a street, lane, alley, court, square or quay, and name it like one",
-                  )
+                True, _, _, Some(problem) -> retry(text, problem)
                 _, _, _, _ ->
                   case duplicate, copied, missing, unmentioned, surfaced {
                     // One retry for a taken name: the model tends to repeat it

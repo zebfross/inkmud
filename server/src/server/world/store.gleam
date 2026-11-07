@@ -19,7 +19,8 @@ pub type Store =
 
 /// What stands in a passage between two cells (a lock, an obstacle) belongs
 /// to the passage, not to either side of it: it bars the way both ways,
-/// and opening it opens it from both sides. A passage is keyed by the cell
+/// and opening it opens it from both sides. A door (between a street and a
+/// building) is the passage's too. A passage is keyed by the cell
 /// at its lower end along its axis (the north, west or lower cell) and the
 /// axis ("ns", "ew" or "ud"). `exit_passages` gives each exit its
 /// passage's lock and obstacle.
@@ -36,20 +37,9 @@ create table if not exists passages (
   lock_desc text,
   obstacle_kind text,
   obstacle_desc text,
+  door integer not null default 0,
   primary key (x, y, z, axis)
 );
-create view if not exists exit_passages as
-select e.room_id, e.direction, e.hint, e.target_region, e.target_id,
-       p.lock_id, p.lock_desc, p.obstacle_kind, p.obstacle_desc
-from exits e
-join rooms r on r.id = e.room_id
-left join passages p
-  on p.x = r.x - (e.direction = 'west')
- and p.y = r.y - (e.direction = 'north')
- and p.z = r.z - (e.direction = 'down')
- and p.axis = case when e.direction in ('north', 'south') then 'ns'
-                   when e.direction in ('east', 'west') then 'ew'
-                   else 'ud' end;
 insert into passages (x, y, z, axis, lock_id, lock_desc)
 select r.x - (e.direction = 'west'), r.y - (e.direction = 'north'),
        r.z - (e.direction = 'down'),
@@ -72,6 +62,23 @@ on conflict do update set obstacle_kind = excluded.obstacle_kind,
 update exits set lock_id = null, lock_desc = null, obstacle_kind = null,
   obstacle_desc = null
 where lock_id is not null or obstacle_kind is not null;
+"
+
+const passages_view = "
+drop view if exists exit_passages;
+create view exit_passages as
+select e.room_id, e.direction, e.hint, e.target_region, e.target_id,
+       p.lock_id, p.lock_desc, p.obstacle_kind, p.obstacle_desc,
+       coalesce(p.door, 0) as door
+from exits e
+join rooms r on r.id = e.room_id
+left join passages p
+  on p.x = r.x - (e.direction = 'west')
+ and p.y = r.y - (e.direction = 'north')
+ and p.z = r.z - (e.direction = 'down')
+ and p.axis = case when e.direction in ('north', 'south') then 'ns'
+                   when e.direction in ('east', 'west') then 'ew'
+                   else 'ud' end;
 "
 
 /// The passage through `room_id`'s way `d`, as its key: #(x, y, z, axis).
@@ -220,6 +227,10 @@ pub fn open(path: String) -> Store {
     // when unhurt).
     #("players", "wounds", "integer not null default 0"),
     #("players", "heal_at", "integer not null default 0"),
+    // Outdoors, inside or below (see `types.Setting`), and for an inside
+    // place, its building.
+    #("rooms", "setting", "text"),
+    #("rooms", "building", "integer"),
   ]
   |> list.each(fn(column) {
     let #(table, name, kind) = column
@@ -242,6 +253,24 @@ pub fn open(path: String) -> Store {
     }
   })
   let assert Ok(Nil) = sqlight.exec(passages_schema, conn)
+  case has_column(conn, "passages", "door") {
+    True -> Nil
+    False -> {
+      let assert Ok(Nil) =
+        sqlight.exec(
+          "alter table passages add column door integer not null default 0;",
+          conn,
+        )
+      Nil
+    }
+  }
+  let assert Ok(Nil) = sqlight.exec(passages_view, conn)
+  // Places from before settings: underground is below, the rest outdoors.
+  let assert Ok(Nil) =
+    sqlight.exec(
+      "update rooms set setting = case when z < 0 then 'below' else 'outdoors' end where setting is null;",
+      conn,
+    )
   let assert Ok(Nil) =
     sqlight.exec(
       "create unique index if not exists rooms_cell on rooms (x, y, z);",
@@ -357,6 +386,8 @@ pub fn load_room(store: Store, id: Int) -> Result(Room, Nil) {
     use z <- decode.field(7, decode.optional(decode.int))
     use picture <- decode.field(8, decode.optional(decode.string))
     use dark <- decode.field(9, decode.int)
+    use setting <- decode.field(10, decode.optional(decode.string))
+    use building <- decode.field(11, decode.optional(decode.int))
     decode.success(#(
       region,
       name,
@@ -364,13 +395,13 @@ pub fn load_room(store: Store, id: Int) -> Result(Room, Nil) {
       features,
       art_url,
       #(x, y, z),
-      #(option.unwrap(picture, ""), dark == 1),
+      #(option.unwrap(picture, ""), dark == 1, setting, building),
     ))
   }
   use row <- result.try(
     case
       sqlight.query(
-        "select region_id, name, description, features, art_url, x, y, z, picture, dark from rooms where id = ?",
+        "select region_id, name, description, features, art_url, x, y, z, picture, dark, setting, building from rooms where id = ?",
         store,
         [sqlight.int(id)],
         decoder,
@@ -387,7 +418,7 @@ pub fn load_room(store: Store, id: Int) -> Result(Room, Nil) {
     features,
     art_url,
     #(x, y, z),
-    #(picture, dark),
+    #(picture, dark, setting, building),
   ) = row
   Ok(Room(
     id:,
@@ -405,6 +436,15 @@ pub fn load_room(store: Store, id: Int) -> Result(Room, Nil) {
     y: option.unwrap(y, 0),
     z: option.unwrap(z, 0),
     dark:,
+    setting: case setting {
+      Some(text) -> types.parse_setting(text)
+      None ->
+        case option.unwrap(z, 0) < 0 {
+          True -> types.Below
+          False -> types.Outdoors
+        }
+    },
+    building:,
   ))
 }
 
@@ -485,14 +525,21 @@ fn exits(store: Store, room_id: Int) -> List(Exit) {
     use lock <- decode.field(4, decode.optional(decode.string))
     use obstacle_kind <- decode.field(5, decode.optional(decode.string))
     use obstacle_desc <- decode.field(6, decode.optional(decode.string))
+    use door <- decode.field(7, decode.int)
     let obstacle = case obstacle_kind, obstacle_desc {
       Some(kind), Some(desc) -> Some(types.Obstacle(kind:, desc:))
       _, _ -> None
     }
-    decode.success(#(direction, hint, target_region, target, #(lock, obstacle)))
+    decode.success(#(
+      direction,
+      hint,
+      target_region,
+      target,
+      #(lock, obstacle, door == 1),
+    ))
   }
   sqlight.query(
-    "select direction, hint, target_region, target_id, lock_desc, obstacle_kind, obstacle_desc from exit_passages where room_id = ?",
+    "select direction, hint, target_region, target_id, lock_desc, obstacle_kind, obstacle_desc, door from exit_passages where room_id = ?",
     store,
     [sqlight.int(room_id)],
     decoder,
@@ -507,6 +554,7 @@ fn exits(store: Store, room_id: Int) -> List(Exit) {
       target: row.3,
       lock: row.4.0,
       obstacle: row.4.1,
+      door: row.4.2,
     )
   })
 }
@@ -1431,6 +1479,82 @@ fn takeable() -> String {
 }
 
 // LIGHT AND DARK --------------------------------------------------------------
+
+/// What kind of place a new room is, and for an inside one, its building.
+pub fn set_setting(
+  store: Store,
+  room_id: Int,
+  setting: types.Setting,
+  building: Option(Int),
+) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "update rooms set setting = ?, building = ? where id = ?",
+      store,
+      [
+        sqlight.text(types.setting_name(setting)),
+        sqlight.nullable(sqlight.int, building),
+        sqlight.int(room_id),
+      ],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+/// Make the passage through `room_id`'s way `d` a door (both sides see it).
+pub fn set_door(store: Store, room_id: Int, d: Direction) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "insert into passages (door, x, y, z, axis) values (1, ?, ?, ?, ?)
+       on conflict do update set door = 1",
+      store,
+      passage(store, room_id, d),
+      decode.success(Nil),
+    )
+  Nil
+}
+
+/// A building's rooms: #(on the ground floor, upstairs).
+pub fn building_rooms(store: Store, building: Int) -> #(Int, Int) {
+  case
+    sqlight.query(
+      "select coalesce(sum(z = 0), 0), coalesce(sum(z > 0), 0) from rooms where building = ?",
+      store,
+      [sqlight.int(building)],
+      {
+        use ground <- decode.field(0, decode.int)
+        use up <- decode.field(1, decode.int)
+        decode.success(#(ground, up))
+      },
+    )
+  {
+    Ok([counts]) -> counts
+    _ -> #(0, 0)
+  }
+}
+
+/// A building's ways out still leading nowhere built: #(to more rooms on
+/// its floor, up its stairs). Doors out don't count.
+pub fn building_open_ways(store: Store, building: Int) -> #(Int, Int) {
+  case
+    sqlight.query(
+      "select coalesce(sum(e.direction in ('north', 'south', 'east', 'west')), 0),
+              coalesce(sum(e.direction = 'up'), 0)
+       from exit_passages e join rooms r on r.id = e.room_id
+       where r.building = ? and e.target_id is null and e.door = 0",
+      store,
+      [sqlight.int(building)],
+      {
+        use across <- decode.field(0, decode.int)
+        use up <- decode.field(1, decode.int)
+        decode.success(#(across, up))
+      },
+    )
+  {
+    Ok([counts]) -> counts
+    _ -> #(0, 0)
+  }
+}
 
 pub fn set_dark(store: Store, room_id: Int) -> Nil {
   let assert Ok(_) =

@@ -120,6 +120,8 @@ pub type ExitView {
     hint: String,
     lock: Option(String),
     obstacle: Option(String),
+    /// A door: through it is into a building, or back out.
+    door: Bool,
   )
 }
 
@@ -141,6 +143,8 @@ pub type RoomView {
     dark: Bool,
     /// A creature barring the way: everyone here faces it.
     foe: Option(FoeView),
+    /// "outdoors", "inside" or "below".
+    setting: String,
   )
 }
 
@@ -171,6 +175,8 @@ pub type MapRoom {
     x: Int,
     y: Int,
     z: Int,
+    /// "outdoors", "inside" or "below".
+    setting: String,
     /// Ways out not yet taken (leading somewhere unvisited or unbuilt).
     unexplored: List(String),
   )
@@ -303,6 +309,7 @@ pub fn encode_server(msg: ServerMsg) -> String {
               #("x", json.int(r.x)),
               #("y", json.int(r.y)),
               #("z", json.int(r.z)),
+              #("setting", json.string(r.setting)),
               #("unexplored", json.array(r.unexplored, json.string)),
             ])
           }),
@@ -367,6 +374,7 @@ fn room_json(view: RoomView) -> Json {
           #("hint", json.string(e.hint)),
           #("lock", json.nullable(e.lock, json.string)),
           #("obstacle", json.nullable(e.obstacle, json.string)),
+          #("door", json.bool(e.door)),
         ])
       }),
     ),
@@ -375,6 +383,7 @@ fn room_json(view: RoomView) -> Json {
     #("others", json.array(view.others, json.string)),
     #("art", json.nullable(view.art, json.string)),
     #("dark", json.bool(view.dark)),
+    #("setting", json.string(view.setting)),
     #(
       "foe",
       json.nullable(view.foe, fn(f) {
@@ -423,7 +432,8 @@ fn room_decoder() -> Decoder(RoomView) {
       None,
       decode.optional(decode.string),
     )
-    decode.success(ExitView(direction:, hint:, lock:, obstacle:))
+    use door <- decode.optional_field("door", False, decode.bool)
+    decode.success(ExitView(direction:, hint:, lock:, obstacle:, door:))
   }
   use id <- decode.field("id", decode.int)
   use region <- decode.field("region", decode.string)
@@ -462,6 +472,7 @@ fn room_decoder() -> Decoder(RoomView) {
     ))
   }
   use foe <- decode.optional_field("foe", None, decode.optional(foe))
+  use setting <- decode.optional_field("setting", "outdoors", decode.string)
   decode.success(RoomView(
     id:,
     region:,
@@ -474,6 +485,7 @@ fn room_decoder() -> Decoder(RoomView) {
     art:,
     dark:,
     foe:,
+    setting:,
   ))
 }
 
@@ -542,6 +554,11 @@ pub fn decode_server(text: String) -> Result(ServerMsg, Nil) {
           use x <- decode.field("x", decode.int)
           use y <- decode.field("y", decode.int)
           use z <- decode.field("z", decode.int)
+          use setting <- decode.optional_field(
+            "setting",
+            "outdoors",
+            decode.string,
+          )
           use unexplored <- decode.field(
             "unexplored",
             decode.list(decode.string),
@@ -554,6 +571,7 @@ pub fn decode_server(text: String) -> Result(ServerMsg, Nil) {
             x:,
             y:,
             z:,
+            setting:,
             unexplored:,
           ))
         }

@@ -450,14 +450,18 @@ fn handle_seen(state: State, message: Message) -> actor.Next(State, Message) {
 /// Roll for something waiting here, and if so, bring it on.
 fn meet(state: State) -> State {
   let room = state.room
-  case
-    danger.roll_encounter(
-      room.z,
-      room.region,
-      builder.tier(types.cell(room)),
-      room.dark,
-    )
-  {
+  // Nothing comes at you indoors.
+  let met = case room.setting == types.Inside {
+    True -> None
+    False ->
+      danger.roll_encounter(
+        room.z,
+        room.region,
+        builder.tier(types.cell(room)),
+        room.dark,
+      )
+  }
+  case met {
     None -> state
     Some(creature) -> {
       let line =
@@ -774,6 +778,7 @@ fn view(state: State, for: String) -> protocol.RoomView {
             e.hint,
             e.lock,
             option.map(e.obstacle, types.obstructed),
+            e.door,
           )
         }),
         items: item_views(store.room_item_rows(state.store, room.id)),
@@ -782,6 +787,7 @@ fn view(state: State, for: String) -> protocol.RoomView {
         art: room.art_url,
         dark: False,
         foe: foe_view(state),
+        setting: types.setting_name(room.setting),
       )
     // In the dark: no description, picture or items, and only the way
     // you came in (or, if you didn't come in, say after logging in here,
@@ -805,6 +811,7 @@ fn view(state: State, for: String) -> protocol.RoomView {
               "the way you came",
               None,
               None,
+              e.door,
             )
           }),
         items: [],
@@ -813,6 +820,7 @@ fn view(state: State, for: String) -> protocol.RoomView {
         art: None,
         dark: True,
         foe: foe_view(state),
+        setting: types.setting_name(room.setting),
       )
   }
 }

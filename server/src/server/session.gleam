@@ -802,6 +802,10 @@ fn on_event(session: Session, event: Event, conn) -> Session {
     }
     Moved(d, world.Arrived(id)) -> {
       let assert Some(name) = session.name
+      case threshold(session.deps.store, session.room_id, d, id) {
+        Some(text) -> send(conn, Line(Narration, text))
+        None -> Nil
+      }
       case session.room {
         Some(r) -> process.send(r, room.Leave(name, process.self(), Some(d)))
         None -> Nil
@@ -946,6 +950,7 @@ fn map_view(deps: Deps, name: String, current: Int) -> protocol.MapView {
         x: p.x,
         y: p.y,
         z: p.z,
+        setting: types.setting_name(p.room.setting),
         unexplored: p.room.exits
           |> list.filter(fn(e) {
             case e.target {
@@ -1044,5 +1049,36 @@ fn burn_in_the_dark(session: Session, name: String, room_id: Int, conn) -> Nil {
         _ -> Nil
       }
     _ -> Nil
+  }
+}
+
+/// Going through a door says so: in from the street, back out onto it, or
+/// from one building into the next.
+fn threshold(
+  store: store.Store,
+  from: Int,
+  d: Direction,
+  to: Int,
+) -> Option(String) {
+  let door = case store.load_room(store, from) {
+    Ok(r) ->
+      case types.find_exit(r, d) {
+        Ok(e) -> e.door
+        Error(Nil) -> False
+      }
+    Error(Nil) -> False
+  }
+  case door, store.load_room(store, to) {
+    True, Ok(r) ->
+      case r.setting {
+        types.Inside ->
+          case store.load_room(store, from) {
+            Ok(types.Room(setting: types.Inside, ..)) ->
+              Some("You go through the door into the next building.")
+            _ -> Some("You go inside.")
+          }
+        _ -> Some("You step back out into the street.")
+      }
+    _, _ -> None
   }
 }

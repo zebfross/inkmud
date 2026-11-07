@@ -809,7 +809,11 @@ fn view_topbar(model: Model) -> Element(Msg) {
     ]),
     case model.room {
       Some(room) ->
-        html.div([class("place-pill")], [icon("explore"), text(room.name)])
+        html.div([class("place-pill")], [
+          icon("explore"),
+          html.span([class("place-name")], [text(room.name)]),
+          view_setting(room.setting),
+        ])
       None -> element.none()
     },
     html.div([class("topbar-right")], [
@@ -992,10 +996,11 @@ fn view_scene(room: RoomView) -> Element(Msg) {
               event.on("mouseleave", decode.success(Unglimpse)),
             ],
             [
-              icon(case e.lock, e.obstacle {
-                Some(_), _ -> "lock"
-                None, Some(_) -> "construction"
-                None, None -> compass_glyph(e.direction)
+              icon(case e.lock, e.obstacle, e.door {
+                Some(_), _, _ -> "lock"
+                None, Some(_), _ -> "construction"
+                None, None, True -> "door_front"
+                None, None, False -> compass_glyph(e.direction)
               }),
               text(e.direction),
             ],
@@ -1003,6 +1008,19 @@ fn view_scene(room: RoomView) -> Element(Msg) {
         }),
       ),
     ]),
+  ])
+}
+
+/// Where you are: out under the sky, inside a building, or underground.
+fn view_setting(setting: String) -> Element(Msg) {
+  let #(glyph, word) = case setting {
+    "inside" -> #("home", "Indoors")
+    "below" -> #("foundation", "Below")
+    _ -> #("cloud", "Outdoors")
+  }
+  html.span([class("setting-tag " <> setting), attribute.title(word)], [
+    icon(glyph),
+    html.span([class("setting-word")], [text(word)]),
   ])
 }
 
@@ -1228,10 +1246,11 @@ fn view_compass(room: RoomView) -> Element(Msg) {
             class(
               "point at-"
               <> d
-              <> case e.lock, e.obstacle {
-                Some(_), _ -> " barred"
-                None, Some(_) -> " barred"
-                None, None -> ""
+              <> case e.lock, e.obstacle, e.door {
+                Some(_), _, _ -> " barred"
+                None, Some(_), _ -> " barred"
+                None, None, True -> " door"
+                None, None, False -> ""
               },
             ),
             attribute.title(e.hint),
@@ -1353,12 +1372,14 @@ fn view_glimpse(model: Model) -> Element(Msg) {
         html.p([], [
           html.span([class("glimpse-dir")], [text(e.direction)]),
           text(e.hint),
-          case e.lock, e.obstacle {
-            Some(lock), _ ->
+          case e.lock, e.obstacle, e.door {
+            Some(lock), _, _ ->
               html.span([class("glimpse-lock")], [text(" · locked: " <> lock)])
-            None, Some(o) ->
+            None, Some(o), _ ->
               html.span([class("glimpse-lock")], [text(" · " <> o)])
-            None, None -> element.none()
+            None, None, True ->
+              html.span([class("glimpse-door")], [text(" · a door")])
+            None, None, False -> element.none()
           },
         ])
       None ->

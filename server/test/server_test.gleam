@@ -87,9 +87,18 @@ pub fn look_toward_wording_test() {
       None,
       None,
       None,
+      False,
     ),
-    Exit(Down, "An iron grate breathes warm air.", "x", None, None, None),
-    Exit(West, "back toward The Lantern Crossroads", "x", Some(1), None, None),
+    Exit(Down, "An iron grate breathes warm air.", "x", None, None, None, False),
+    Exit(
+      West,
+      "back toward The Lantern Crossroads",
+      "x",
+      Some(1),
+      None,
+      None,
+      False,
+    ),
   ]
   assert room.look_toward(exits, North)
     == "To the north, worn stone stairs climb toward a broken bell tower."
@@ -122,13 +131,17 @@ fn room_with(id: Int, exits: List(#(types.Direction, Int))) -> types.Room {
     description: "",
     features: [],
     items: [],
-    exits: list.map(exits, fn(e) { Exit(e.0, "", "r", Some(e.1), None, None) }),
+    exits: list.map(exits, fn(e) {
+      Exit(e.0, "", "r", Some(e.1), None, None, False)
+    }),
     art_url: None,
     picture: "",
     x: 0,
     y: 0,
     z: 0,
     dark: False,
+    setting: types.Outdoors,
+    building: None,
   )
 }
 
@@ -545,20 +558,100 @@ pub fn bearing_and_map_code_test() {
 }
 
 pub fn three_levels_test() {
-  let exits = [
-    #("north", "a lane"),
-    #("up", "a stair"),
-    #("down", "a grate"),
-  ]
   // Upstairs is a dead end: no ways on at all.
-  assert builder.allowed_exits(exits, 1, True) == []
+  assert builder.choices(1, True, True) == []
   // Underground: no way further down; up (to the street) is fine.
-  assert builder.allowed_exits(exits, -1, False)
-    == [#("north", "a lane"), #("up", "a stair")]
+  assert builder.choices(-1, True, False)
+    == ["north", "south", "east", "west", "up"]
   // Streets: down always; up only when this place was allowed one.
-  assert builder.allowed_exits(exits, 0, False)
-    == [#("north", "a lane"), #("down", "a grate")]
-  assert builder.allowed_exits(exits, 0, True) == exits
+  assert builder.choices(0, True, False)
+    == ["north", "south", "east", "west", "down"]
+  assert builder.choices(0, True, True)
+    == ["north", "south", "east", "west", "up", "down"]
+  // A full building: no more rooms beside this one.
+  assert builder.choices(0, False, True) == ["up", "down"]
+}
+
+/// Outside or inside is the engine's: a door takes you in or out, and
+/// otherwise you stay as you were.
+pub fn settings_test() {
+  let street = #(types.Outdoors, None, 1)
+  let shop = #(types.Inside, Some(7), 7)
+  // Through a door from a street: a new building.
+  assert builder.setting_for(street, True, 0) == #(types.Inside, None)
+  assert builder.setting_for(street, False, 0) == #(types.Outdoors, None)
+  // Deeper into a building, or up its stairs: the same building.
+  assert builder.setting_for(shop, False, 0) == #(types.Inside, Some(7))
+  assert builder.setting_for(shop, False, 1) == #(types.Inside, Some(7))
+  // Out through its door: the street.
+  assert builder.setting_for(shop, True, 0) == #(types.Outdoors, None)
+  // Up from a street: a rooftop; down from anywhere: below.
+  assert builder.setting_for(street, False, 1) == #(types.Outdoors, None)
+  assert builder.setting_for(shop, False, -1) == #(types.Below, None)
+  // Coming up from below: out onto a street.
+  assert builder.setting_for(#(types.Below, None, 3), False, 0)
+    == #(types.Outdoors, None)
+  // Doors between a street and a building, or two buildings; not between
+  // rooms of one building, or levels.
+  assert builder.needs_door(#(types.Outdoors, None, 0), #(
+    types.Inside,
+    Some(7),
+    0,
+  ))
+  assert builder.needs_door(#(types.Inside, Some(7), 0), #(
+    types.Inside,
+    Some(9),
+    0,
+  ))
+  assert !builder.needs_door(#(types.Inside, Some(7), 0), #(
+    types.Inside,
+    Some(7),
+    0,
+  ))
+  assert !builder.needs_door(#(types.Outdoors, None, 0), #(
+    types.Outdoors,
+    None,
+    0,
+  ))
+  assert !builder.needs_door(#(types.Inside, Some(7), 0), #(
+    types.Below,
+    None,
+    -1,
+  ))
+}
+
+/// A door belongs to the passage: both sides see it.
+pub fn door_both_sides_test() {
+  let db = store.open(":memory:")
+  let start = seed.run(db)
+  store.set_door(db, start, East)
+  let back =
+    store.NewExit(
+      direction: West,
+      hint: "the door back out",
+      target_region: "lantern_ward",
+      target: Some(start),
+    )
+  let assert Ok(shop) =
+    store.insert_room(
+      db,
+      "lantern_ward",
+      "Pawnshop",
+      "A pawnshop.",
+      [],
+      [],
+      [back],
+      #(1, 0, 0),
+    )
+  store.set_setting(db, shop, types.Inside, Some(shop))
+  let assert Ok(s) = store.load_room(db, shop)
+  assert s.setting == types.Inside
+  assert s.building == Some(shop)
+  let assert Ok(Exit(door: True, ..)) = types.find_exit(s, West)
+  let assert Ok(c) = store.load_room(db, start)
+  let assert Ok(Exit(door: True, ..)) = types.find_exit(c, East)
+  let assert Ok(Exit(door: False, ..)) = types.find_exit(c, North)
+  assert store.building_rooms(db, shop) == #(1, 0)
 }
 
 pub fn danger_dice_test() {
@@ -660,14 +753,47 @@ pub fn passage_is_one_thing_test() {
 /// Street-level places are out under the sky: indoor or underground words
 /// in a street place's name or text send it back to the model.
 pub fn street_is_outdoors_test() {
-  assert builder.indoor_words("Forgotten Tunnels", "A lane.", 0) == ["tunnel"]
+  assert builder.indoor_words("Forgotten Tunnels", "A lane.", types.Outdoors, 0)
+    == ["tunnel"]
   assert builder.indoor_words(
       "Moonlit Gilded Grotto",
       "A passageway under a grand chandelier.",
+      types.Outdoors,
       0,
     )
     == ["grotto", "chandelier"]
-  assert builder.indoor_words("Tanner's Lane", "Fog fills the lane.", 0) == []
-  // Underground and upstairs are another matter.
-  assert builder.indoor_words("Forgotten Tunnels", "A tunnel.", -1) == []
+  assert builder.indoor_words(
+      "Tanner's Lane",
+      "Fog fills the lane.",
+      types.Outdoors,
+      0,
+    )
+    == []
+  // Inside a building, or underground, is another matter.
+  assert builder.indoor_words("Forgotten Tunnels", "A tunnel.", types.Below, -1)
+    == []
+  assert builder.indoor_words(
+      "The Gilded Hall",
+      "A chandelier.",
+      types.Inside,
+      0,
+    )
+    == []
+  assert builder.outdoor_words("Stars glitter in the open sky.", types.Inside)
+    == ["open sky"]
+}
+
+/// A building has few rooms: ways out beyond what's left are dropped, but
+/// stairs are kept.
+pub fn building_rooms_cap_test() {
+  let exits = [
+    #("north", "a back room"),
+    #("up", "a stair"),
+    #("east", "a storeroom"),
+    #("west", "a parlour"),
+  ]
+  assert builder.keep_across(exits, 1)
+    == [#("north", "a back room"), #("up", "a stair")]
+  assert builder.keep_across(exits, 0) == [#("up", "a stair")]
+  assert builder.keep_across(exits, 3) == exits
 }

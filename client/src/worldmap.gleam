@@ -628,6 +628,10 @@ fn view_room(state: State, room: MapRoom) -> List(Element(Msg)) {
             True -> " here"
             False -> ""
           }
+          <> case room.setting {
+            "inside" -> " inside"
+            _ -> ""
+          }
           <> case state.selected == Some(room.id) {
             True -> " selected"
             False -> ""
@@ -648,6 +652,21 @@ fn view_room(state: State, room: MapRoom) -> List(Element(Msg)) {
             #(cx -. 26.0, cy),
           ]),
         ]),
+        // Inside a building: a smaller tile within, like walls seen from
+        // above.
+        case room.setting {
+          "inside" ->
+            svg.polygon([
+              class("map-walls"),
+              points([
+                #(cx, cy -. 7.0),
+                #(cx +. 14.0, cy),
+                #(cx, cy +. 7.0),
+                #(cx -. 14.0, cy),
+              ]),
+            ])
+          _ -> element.none()
+        },
         case here {
           True ->
             svg.circle([
