@@ -205,6 +205,32 @@ pub fn closeup(
   process.send(art, Request(job, True, notify))
 }
 
+/// A creature's picture: one per kind, drawn once and kept.
+pub fn creature(
+  art: Subject(Message),
+  store: Store,
+  kind: String,
+  looks: String,
+  notify: fn(String) -> Nil,
+) {
+  let key = "creature-" <> kind
+  let prompt =
+    style
+    <> ". "
+    <> looks
+    <> ", menacing, centered, filling the frame, finely detailed."
+  let job =
+    Job(
+      key:,
+      prompt:,
+      seed: seed_for(key),
+      file: key <> ".png",
+      cached: fn() { store.closeup_url(store, key) },
+      save: fn(url) { store.set_closeup(store, key, url, prompt) },
+    )
+  process.send(art, Request(job, True, notify))
+}
+
 /// The thing itself, centred and large; the room only as a blurred hint of
 /// where it is, so its landmarks can't take over the picture.
 pub fn closeup_prompt(room: Room, thing: Examinable) -> String {

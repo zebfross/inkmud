@@ -9,6 +9,7 @@ import server/command.{
 }
 import server/llm
 import server/world/builder
+import server/world/danger
 import server/world/map
 import server/world/room
 import server/world/seed
@@ -554,4 +555,58 @@ pub fn three_levels_test() {
   assert builder.allowed_exits(exits, 0, False)
     == [#("north", "a lane"), #("down", "a grate")]
   assert builder.allowed_exits(exits, 0, True) == exits
+}
+
+pub fn danger_dice_test() {
+  // Rats (1) fall on a 3+; a drowned thing (3) on a 5+, or a 3+ with a
+  // crowbar.
+  assert !danger.hits(2, 0, 1)
+  assert danger.hits(3, 0, 1)
+  assert !danger.hits(4, 0, 3)
+  assert danger.hits(5, 0, 3)
+  assert danger.hits(3, 2, 3)
+  // Only the best tool counts; rope is no weapon.
+  assert danger.weapon_bonus([]) == 0
+  assert danger.weapon_bonus(["rope"]) == 0
+  assert danger.weapon_bonus(["spade", "crowbar", "pole"]) == 2
+  assert danger.weapon([#("coil of rope", "rope"), #("spade", "spade")])
+    == Some("spade")
+}
+
+pub fn danger_where_test() {
+  // Nothing near the crossroads; more further out and in the dark.
+  assert danger.encounter_chance(0, True) == 0
+  assert danger.encounter_chance(1, False) == 10
+  assert danger.encounter_chance(2, True) == 30
+  let kinds = fn(z, region, tier) {
+    danger.candidates(z, region, tier) |> list.map(fn(c) { c.kind })
+  }
+  // Underground in wary places: only rats. Perilous: drowned things too,
+  // and in the Warrens a gang.
+  assert kinds(-1, "lantern_ward", 1) == ["rats"]
+  assert kinds(-1, "drowned_quarter", 2) == ["rats", "drowned"]
+  assert kinds(-1, "warrens", 2) == ["rats", "drowned", "gang"]
+  assert kinds(0, "lantern_ward", 1) == ["dog", "footpad"]
+  assert kinds(1, "lantern_ward", 1) == []
+  assert kinds(1, "lantern_ward", 2) == ["prowler"]
+}
+
+pub fn wounds_test() {
+  let db = store.open(":memory:")
+  let _ = seed.run(db)
+  store.set_player_room(db, "Ada", 1)
+  assert store.wounds(db, "Ada") == 0
+  assert store.add_wound(db, "Ada") == 1
+  assert store.add_wound(db, "Ada") == 2
+  assert store.wounds(db, "Ada") == 2
+  store.set_wounds(db, "Ada", 0)
+  assert store.wounds(db, "Ada") == 0
+  // Collapsing leaves what you carried where you fell.
+  assert store.take_item(db, 1, "Ada", "tin of lamp oil")
+    == Ok("tin of lamp oil")
+  let assert Ok(den) =
+    store.insert_room(db, "warrens", "Den", "A den.", [], [], [], #(0, 0, -1))
+  assert store.drop_all(db, den, "Ada") == ["tin of lamp oil"]
+  assert store.inventory(db, "Ada") == []
+  assert store.room_items(db, den) == ["tin of lamp oil"]
 }

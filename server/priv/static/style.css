@@ -168,6 +168,9 @@ a { color: inherit; text-decoration: none; }
 /* Capped in height so the chronicle (what you read) stays on screen. */
 .scene-frame {
   position: relative; border-radius: 8px; overflow: hidden; background: var(--s-lowest);
+  /* clip, not just hidden: a hidden overflow can still be scrolled (focusing
+     a label did, into the blurred border), a clipped one can't. */
+  overflow: clip;
   height: clamp(320px, 62vh, 720px);
 }
 .scene-picture { position: relative; width: 100%; height: 100%; object-fit: contain; display: block; animation: develop 1.4s ease-out; }
@@ -205,6 +208,40 @@ a { color: inherit; text-decoration: none; }
 .scene-label.at-down { bottom: 12px; left: 12px; }
 @keyframes develop { from { opacity: 0; filter: blur(6px) sepia(.6); } to { opacity: 1; filter: none; } }
 @keyframes breathe { 50% { opacity: .55; } }
+
+/* Health */
+.health { display: flex; align-items: center; gap: 1px; padding: .3rem .5rem; border-radius: 8px; background: var(--s); }
+.heart { font-size: 17px; display: grid; }
+.heart.full { color: var(--primary); }
+.heart.full .icon { font-variation-settings: "FILL" 1, "wght" 400, "GRAD" 0, "opsz" 24; }
+.heart.empty { color: var(--outline-variant); }
+.health.hurt .heart.full { color: var(--error); }
+
+/* Encounter */
+.encounter {
+  display: flex; gap: 16px; padding: 14px; border-color: rgba(255, 180, 171, .35);
+  background: linear-gradient(90deg, rgba(147, 0, 10, .18), var(--s-low) 60%);
+  animation: encounter-in .4s ease-out;
+}
+.encounter-picture {
+  flex: none; width: 132px; height: 132px; border-radius: 8px; overflow: hidden;
+  background: var(--s-lowest); display: grid; place-items: center;
+}
+.encounter-picture img { width: 100%; height: 100%; object-fit: cover; animation: develop 1.4s ease-out; }
+.encounter-glyph { font-size: 44px; color: var(--error); opacity: .6; }
+.encounter-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .6rem; }
+.encounter .card-head { margin: 0; }
+.encounter .card-head h2 { color: var(--error); text-transform: capitalize; }
+.encounter .card-head h2 .icon { color: var(--error); }
+.encounter-line { margin: 0; font-size: 1.12rem; line-height: 1.5; }
+.encounter-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+.encounter-actions .action { flex: 0 1 auto; padding: .55rem .9rem; }
+.encounter-actions .action.primary { background: var(--error); color: #4a0005; }
+.encounter-actions .light-hint { color: var(--primary); box-shadow: inset 0 0 0 1px rgba(255, 183, 125, .5); }
+.pips { display: flex; gap: 4px; }
+.pip { width: 10px; height: 10px; border-radius: 50%; background: var(--s-highest); }
+.pip.on { background: var(--error); }
+@keyframes encounter-in { from { opacity: 0; transform: translateY(-6px); } }
 
 /* Chronicle */
 .chronicle { padding: 18px 20px; }
@@ -427,7 +464,16 @@ button.slot:hover { background: var(--s-high); }
   .columns { grid-template-columns: 1fr; gap: 12px; }
   .main-col, .side-col { gap: 12px; display: contents; }
   /* No compass on phones: the ways out are labelled on the picture. */
-  .scene { order: 1; } .chronicle { order: 2; } .compass { display: none; }
+  .scene { order: 1; } .encounter { order: 2; } .chronicle { order: 3; } .compass { display: none; }
+  .encounter { gap: 12px; padding: 12px; }
+  .encounter-picture { width: 92px; height: 92px; }
+  .encounter-line { font-size: 1rem; }
+  .health { padding: .3rem .35rem; }
+  /* Room for the place name: no logo, and the lantern as just its number. */
+  .brand { display: none; }
+  .gauge-track { display: none; }
+  .gauge { padding: .3rem .45rem; gap: .25rem; }
+  .heart { font-size: 15px; }
   .curios { order: 4; } .souls { order: 5; } .satchel { order: 6; } .glimpse-card { order: 7; }
   .wide-only { display: none; }
   .columns > .main-col > *, .columns > .side-col > * { margin-bottom: 12px; }

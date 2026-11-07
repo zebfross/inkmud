@@ -20,6 +20,7 @@ import mist.{type Connection, type ResponseData}
 import server/art
 import server/command.{type Command}
 import server/llm.{type Client}
+import server/world/danger
 import server/world/map
 import server/world/room
 import server/world/seed
@@ -52,6 +53,12 @@ pub type Event {
   Retire
   /// Background work that already sent what it had to say.
   Quiet
+  /// How a round against a creature went.
+  Fought(room.Outcome)
+  /// Ran from a creature, back the way `Direction`.
+  Fled(Direction, room.Outcome)
+  /// Wounds heal with time: check now and then.
+  CheckHealth
 }
 
 type Session {
@@ -64,6 +71,10 @@ type Session {
     moving: Bool,
     /// The way the player came into the room they're in.
     came_from: Option(Direction),
+    /// The creature in the room, if any (from the latest room view): it
+    /// bars every way but back.
+    foe: Option(String),
+    wounds: Int,
   )
 }
 
@@ -82,6 +93,8 @@ pub fn handle(req: Request(Connection), deps: Deps) -> Response(ResponseData) {
           room: None,
           moving: False,
           came_from: None,
+          foe: None,
+          wounds: 0,
         ),
         Some(selector),
       )
@@ -160,6 +173,10 @@ fn client_message(session: Session, msg: protocol.ClientMsg, conn) -> Session {
             True -> {
               send(conn, protocol.Welcome(name, session.deps.dev_tools))
               send(conn, room.inventory_msg(session.deps.store, name))
+              let wounds = store.wounds(session.deps.store, name)
+              send(conn, protocol.Health(wounds, danger.max_wounds))
+              process.send_after(session.self, 60_000, CheckHealth)
+              let session = Session(..session, wounds:)
               let room_id =
                 store.player_room(session.deps.store, name)
                 |> option.unwrap(session.deps.start_room)
@@ -327,24 +344,185 @@ fn run(session: Session, cmd: Command, interpreted: Bool, conn) -> Session {
       None -> Nil
     }
   }
-  case cmd {
-    command.Go(d) ->
-      case session.moving {
-        True -> {
-          system(conn, "You're already on your way.")
+  let self = session.self
+  case cmd, session.foe {
+    // With a creature here, the only way out is back the way you came (or,
+    // if you didn't come in, any way): running from it.
+    command.Go(d), Some(foe) ->
+      case session.came_from {
+        Some(back) if back != d -> {
+          system(
+            conn,
+            "The "
+              <> foe
+              <> " is in your way! Fight, flee back the way you came, or raise a lantern.",
+          )
           session
         }
-        False -> {
-          let self = session.self
-          process.send(
-            session.deps.world,
-            world.Traverse(name, session.room_id, d, session.came_from, fn(a) {
-              process.send(self, Moved(d, a))
-            }),
-          )
-          Session(..session, moving: True)
+        _ -> flee(session, d, conn)
+      }
+    command.Flee, Some(_) ->
+      case session.came_from {
+        Some(back) -> flee(session, back, conn)
+        None -> {
+          system(conn, "Which way? Pick a way out to run.")
+          session
         }
       }
+    command.Flee, None -> {
+      system(conn, "There's nothing to flee from.")
+      session
+    }
+    command.Fight, _ -> {
+      tell_room(room.Fight(name, fn(o) { process.send(self, Fought(o)) }))
+      session
+    }
+    command.Brandish, _ -> {
+      tell_room(room.Brandish(name, fn(o) { process.send(self, Fought(o)) }))
+      session
+    }
+    command.Rest, Some(foe) -> {
+      system(conn, "Rest, with the " <> foe <> " here?")
+      session
+    }
+    command.Dig, Some(foe) | command.Refill, Some(foe) -> {
+      system(conn, "Not with the " <> foe <> " on you!")
+      session
+    }
+    command.Rest, None -> rest(session, name, conn)
+    command.Go(d), None -> go(session, d, conn)
+    _, _ -> run_calm(session, name, cmd, interpreted, conn)
+  }
+}
+
+fn go(session: Session, d: Direction, conn) -> Session {
+  case session.moving {
+    True -> {
+      system(conn, "You're already on your way.")
+      session
+    }
+    False -> traverse(session, d)
+  }
+}
+
+fn traverse(session: Session, d: Direction) -> Session {
+  let assert Some(name) = session.name
+  let self = session.self
+  process.send(
+    session.deps.world,
+    world.Traverse(name, session.room_id, d, session.came_from, fn(a) {
+      process.send(self, Moved(d, a))
+    }),
+  )
+  Session(..session, moving: True)
+}
+
+/// Run from the creature here: it may get a blow in as you go.
+fn flee(session: Session, d: Direction, conn) -> Session {
+  let assert Some(name) = session.name
+  case session.moving, session.room {
+    True, _ -> {
+      system(conn, "You're already on your way.")
+      session
+    }
+    False, Some(r) -> {
+      let self = session.self
+      process.send(r, room.Flee(name, fn(o) { process.send(self, Fled(d, o)) }))
+      Session(..session, moving: True)
+    }
+    False, None -> session
+  }
+}
+
+/// Only somewhere safe: for now, the crossroads under its great lamp.
+fn rest(session: Session, name: String, conn) -> Session {
+  let wounds = store.wounds(session.deps.store, name)
+  case session.room_id == session.deps.start_room, wounds {
+    True, 0 -> {
+      send(
+        conn,
+        Line(
+          Narration,
+          "You rest a while under the great lamp. You aren't hurt.",
+        ),
+      )
+      session
+    }
+    True, _ -> {
+      store.set_wounds(session.deps.store, name, 0)
+      send(
+        conn,
+        Line(
+          Narration,
+          "You sit beneath the great lamp and tend your wounds. Warmth and light seep back into you.",
+        ),
+      )
+      health(session, 0, conn)
+    }
+    False, 0 -> {
+      system(conn, "You aren't hurt.")
+      session
+    }
+    False, _ -> {
+      system(
+        conn,
+        "There's nowhere safe to rest here. Only the Lantern Crossroads, under its great lamp, is safe enough. (Wounds also heal by themselves, slowly.)",
+      )
+      session
+    }
+  }
+}
+
+fn health(session: Session, wounds: Int, conn) -> Session {
+  send(conn, protocol.Health(wounds, danger.max_wounds))
+  Session(..session, wounds:)
+}
+
+/// Down: wake at the crossroads, aching and empty-handed. What you carried
+/// lies where you fell.
+fn collapse(session: Session, conn) -> Session {
+  let assert Some(name) = session.name
+  case session.room {
+    Some(r) -> process.send(r, room.Leave(name, process.self(), None))
+    None -> Nil
+  }
+  store.set_wounds(session.deps.store, name, 1)
+  send(conn, protocol.Inventory([]))
+  let session = health(session, 1, conn)
+  send(
+    conn,
+    Line(
+      Narration,
+      "You come to at the Lantern Crossroads, aching, under the great lamp. Your hands are empty: what you carried lies where you fell.",
+    ),
+  )
+  enter(
+    Session(..session, room: None, moving: False, foe: None),
+    session.deps.start_room,
+    None,
+    conn,
+  )
+}
+
+fn run_calm(
+  session: Session,
+  name: String,
+  cmd: Command,
+  interpreted: Bool,
+  conn,
+) -> Session {
+  let tell_room = fn(msg) {
+    case session.room {
+      Some(r) -> process.send(r, msg)
+      None -> Nil
+    }
+  }
+  case cmd {
+    command.Go(_)
+    | command.Fight
+    | command.Flee
+    | command.Brandish
+    | command.Rest -> session
     command.Look -> {
       tell_room(room.Look(name))
       session
@@ -553,6 +731,47 @@ fn on_event(session: Session, event: Event, conn) -> Session {
     // A room view sent just before the player left that room arrives
     // after they're somewhere else. It's stale: drop it.
     Out(protocol.Room(view)) if view.id != session.room_id -> session
+    // The current room: note whether a creature bars the way.
+    Out(protocol.Room(view)) -> {
+      send(conn, protocol.Room(view))
+      Session(..session, foe: option.map(view.foe, fn(f) { f.name }))
+    }
+    Fought(outcome) ->
+      case outcome {
+        room.Collapsed -> collapse(session, conn)
+        room.Hurt(wounds) -> health(session, wounds, conn)
+        room.Drove -> {
+          // A lantern raised burns oil.
+          send(
+            conn,
+            room.inventory_msg(
+              session.deps.store,
+              option.unwrap(session.name, ""),
+            ),
+          )
+          session
+        }
+        _ -> session
+      }
+    Fled(d, outcome) ->
+      case outcome {
+        room.Collapsed -> collapse(session, conn)
+        room.Hurt(wounds) | room.Escaped(wounds) ->
+          health(session, wounds, conn)
+          |> traverse(d)
+        _ -> traverse(Session(..session, moving: False), d)
+      }
+    CheckHealth -> {
+      process.send_after(session.self, 60_000, CheckHealth)
+      case session.name {
+        Some(name) ->
+          case store.wounds(session.deps.store, name) {
+            w if w != session.wounds -> health(session, w, conn)
+            _ -> session
+          }
+        None -> session
+      }
+    }
     Out(msg) -> {
       send(conn, msg)
       session
@@ -653,7 +872,7 @@ fn interpret(
 ) -> Result(String, Nil) {
   let prompt =
     "You translate a player's input in a text adventure into ONE game command.\n"
-    <> "Allowed commands: go north | go south | go east | go west | go up | go down | fill lantern | dig | look | look <north/south/east/west/up/down> | examine <thing> | take <item> | drop <item> | inventory | say <words> | help\n\n"
+    <> "Allowed commands: go north | go south | go east | go west | go up | go down | fill lantern | dig | fight | flee | raise lantern | rest | look | look <north/south/east/west/up/down> | examine <thing> | take <item> | drop <item> | inventory | say <words> | help\n\n"
     <> context(room_data, inventory)
     <> "\n\nPlayer input: \""
     <> text

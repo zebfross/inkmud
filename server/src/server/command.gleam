@@ -18,6 +18,14 @@ pub type Command {
   Refill
   /// Dig where you stand (for buried treasure).
   Dig
+  /// A round against the creature here.
+  Fight
+  /// Run back the way you came.
+  Flee
+  /// Raise a lit lantern at the creature here.
+  Brandish
+  /// Rest somewhere safe: wounds are tended.
+  Rest
   Say(String)
   Help
   Unknown(String)
@@ -67,6 +75,17 @@ pub fn parse(input: String) -> Command {
         "i", "" | "inv", "" | "inventory", "" -> Inventory
         "fill", _ | "refill", _ | "refuel", _ -> Refill
         "dig", _ -> Dig
+        "fight", _
+        | "attack", _
+        | "hit", _
+        | "strike", _
+        | "kill", _
+        | "punch", _
+        | "kick", _
+        -> Fight
+        "flee", _ | "run", _ | "escape", _ | "retreat", _ -> Flee
+        "raise", _ | "brandish", _ | "wave", _ | "shine", _ -> Brandish
+        "rest", _ | "sleep", _ | "heal", _ -> Rest
         "use", "oil" | "pour", "oil" | "use", "lamp oil" | "pour", "lamp oil" ->
           Refill
         "help", "" | "?", "" -> Help
@@ -118,10 +137,14 @@ pub fn describe(command: Command) -> String {
     Inventory -> "inventory"
     Refill -> "fill lantern"
     Dig -> "dig"
+    Fight -> "fight"
+    Flee -> "flee"
+    Brandish -> "raise lantern"
+    Rest -> "rest"
     Say(w) -> "say " <> w
     Help -> "help"
     Unknown(t) -> t
   }
 }
 
-pub const help_text = "Commands: north/south/east/west/up/down (or n/s/e/w/u/d), look, look <direction>, examine <thing>, take <item>, drop <item>, inventory (i), fill lantern, dig, say <words> (or 'words), help. You can also just type what you want to do."
+pub const help_text = "Commands: north/south/east/west/up/down (or n/s/e/w/u/d), look, look <direction>, examine <thing>, take <item>, drop <item>, inventory (i), fill lantern, dig, fight, flee, raise lantern, rest (somewhere safe), say <words> (or 'words), help. You can also just type what you want to do."

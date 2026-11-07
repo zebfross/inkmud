@@ -139,6 +139,24 @@ pub type RoomView {
     /// Pitch dark and the player has no light: shown nothing but the ways
     /// back toward light.
     dark: Bool,
+    /// A creature barring the way: everyone here faces it.
+    foe: Option(FoeView),
+  )
+}
+
+/// A creature in the room. `strength` is how many hits it takes; `left`
+/// how many more.
+pub type FoeView {
+  FoeView(
+    kind: String,
+    name: String,
+    /// What it's doing, for the encounter card.
+    line: String,
+    strength: Int,
+    left: Int,
+    /// A lit lantern drives it off.
+    fears_light: Bool,
+    art: Option(String),
   )
 }
 
@@ -227,6 +245,8 @@ pub type ServerMsg {
   /// Work is under way that the player is waiting on (a room being built).
   Busy(text: String)
   Inventory(items: List(ItemView))
+  /// How hurt the player is: `wounds` of `max` (at max, they collapse).
+  Health(wounds: Int, max: Int)
 }
 
 pub fn encode_server(msg: ServerMsg) -> String {
@@ -323,6 +343,12 @@ pub fn encode_server(msg: ServerMsg) -> String {
         #("t", json.string("inventory")),
         #("items", json.array(items, item_json)),
       ])
+    Health(wounds:, max:) ->
+      json.object([
+        #("t", json.string("health")),
+        #("wounds", json.int(wounds)),
+        #("max", json.int(max)),
+      ])
   }
   |> json.to_string
 }
@@ -349,6 +375,20 @@ fn room_json(view: RoomView) -> Json {
     #("others", json.array(view.others, json.string)),
     #("art", json.nullable(view.art, json.string)),
     #("dark", json.bool(view.dark)),
+    #(
+      "foe",
+      json.nullable(view.foe, fn(f) {
+        json.object([
+          #("kind", json.string(f.kind)),
+          #("name", json.string(f.name)),
+          #("line", json.string(f.line)),
+          #("strength", json.int(f.strength)),
+          #("left", json.int(f.left)),
+          #("fears_light", json.bool(f.fears_light)),
+          #("art", json.nullable(f.art, json.string)),
+        ])
+      }),
+    ),
   ])
 }
 
@@ -399,6 +439,29 @@ fn room_decoder() -> Decoder(RoomView) {
   use others <- decode.field("others", decode.list(decode.string))
   use art <- decode.optional_field("art", None, decode.optional(decode.string))
   use dark <- decode.optional_field("dark", False, decode.bool)
+  let foe = {
+    use kind <- decode.field("kind", decode.string)
+    use name <- decode.field("name", decode.string)
+    use line <- decode.field("line", decode.string)
+    use strength <- decode.field("strength", decode.int)
+    use left <- decode.field("left", decode.int)
+    use fears_light <- decode.field("fears_light", decode.bool)
+    use art <- decode.optional_field(
+      "art",
+      None,
+      decode.optional(decode.string),
+    )
+    decode.success(FoeView(
+      kind:,
+      name:,
+      line:,
+      strength:,
+      left:,
+      fears_light:,
+      art:,
+    ))
+  }
+  use foe <- decode.optional_field("foe", None, decode.optional(foe))
   decode.success(RoomView(
     id:,
     region:,
@@ -410,6 +473,7 @@ fn room_decoder() -> Decoder(RoomView) {
     others:,
     art:,
     dark:,
+    foe:,
   ))
 }
 
@@ -543,6 +607,11 @@ pub fn decode_server(text: String) -> Result(ServerMsg, Nil) {
       "inventory" -> {
         use items <- decode.field("items", decode.list(item_decoder()))
         decode.success(Inventory(items:))
+      }
+      "health" -> {
+        use wounds <- decode.field("wounds", decode.int)
+        use max <- decode.field("max", decode.int)
+        decode.success(Health(wounds:, max:))
       }
       _ -> decode.failure(Busy(""), "ServerMsg")
     }

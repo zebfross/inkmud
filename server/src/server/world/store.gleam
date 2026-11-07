@@ -8,6 +8,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import server/world/danger
 import server/world/types.{
   type Direction, type Exit, type Region, type Room, Exit, Region, Room,
 }
@@ -128,6 +129,10 @@ pub fn open(path: String) -> Store {
     // Blocked by an obstacle a tool of `obstacle_kind` gets you past.
     #("exits", "obstacle_kind", "text"),
     #("exits", "obstacle_desc", "text"),
+    // Wounds taken, and when the next one heals (seconds since 1970; 0
+    // when unhurt).
+    #("players", "wounds", "integer not null default 0"),
+    #("players", "heal_at", "integer not null default 0"),
   ]
   |> list.each(fn(column) {
     let #(table, name, kind) = column
@@ -681,6 +686,128 @@ pub fn player_room(store: Store, name: String) -> Option(Int) {
     Ok([id]) -> Some(id)
     _ -> None
   }
+}
+
+// WOUNDS ----------------------------------------------------------------------
+
+/// How hurt a player is now: wounds heal one at a time, every
+/// `danger.heal_seconds`, whether or not they're playing.
+pub fn wounds(store: Store, player: String) -> Int {
+  let decoder = {
+    use wounds <- decode.field(0, decode.int)
+    use heal_at <- decode.field(1, decode.int)
+    decode.success(#(wounds, heal_at))
+  }
+  case
+    sqlight.query(
+      "select wounds, heal_at from players where name = ?",
+      store,
+      [sqlight.text(player)],
+      decoder,
+    )
+  {
+    Ok([#(0, _)]) | Ok([]) | Error(_) -> 0
+    Ok([#(wounds, heal_at), ..]) -> {
+      let now = danger.now()
+      case now >= heal_at {
+        False -> wounds
+        True -> {
+          let healed = 1 + { now - heal_at } / danger.heal_seconds
+          let left = int.max(0, wounds - healed)
+          write_wounds(
+            store,
+            player,
+            left,
+            heal_at + healed * danger.heal_seconds,
+          )
+          left
+        }
+      }
+    }
+  }
+}
+
+/// One more wound; returns how many the player now has.
+pub fn add_wound(store: Store, player: String) -> Int {
+  let wounds = wounds(store, player) + 1
+  let heal_at = case wounds {
+    // The first wound starts the healing clock; later ones queue behind it.
+    1 -> danger.now() + danger.heal_seconds
+    _ -> current_heal_at(store, player)
+  }
+  write_wounds(store, player, wounds, heal_at)
+  wounds
+}
+
+/// Set wounds outright (rested: 0; woken after collapsing: 1).
+pub fn set_wounds(store: Store, player: String, wounds: Int) -> Nil {
+  write_wounds(store, player, wounds, danger.now() + danger.heal_seconds)
+}
+
+fn current_heal_at(store: Store, player: String) -> Int {
+  case
+    sqlight.query(
+      "select heal_at from players where name = ?",
+      store,
+      [sqlight.text(player)],
+      decode.field(0, decode.int, decode.success),
+    )
+  {
+    Ok([at]) -> at
+    _ -> danger.now() + danger.heal_seconds
+  }
+}
+
+fn write_wounds(
+  store: Store,
+  player: String,
+  wounds: Int,
+  heal_at: Int,
+) -> Nil {
+  let heal_at = case wounds {
+    0 -> 0
+    _ -> heal_at
+  }
+  let assert Ok(_) =
+    sqlight.query(
+      "update players set wounds = ?, heal_at = ? where name = ?",
+      store,
+      [sqlight.int(wounds), sqlight.int(heal_at), sqlight.text(player)],
+      decode.success(Nil),
+    )
+  Nil
+}
+
+/// Everything a player carries, left lying where they fell. Returns what
+/// was dropped.
+pub fn drop_all(store: Store, room_id: Int, player: String) -> List(String) {
+  let names =
+    sqlight.query(
+      "select name from items where holder = ? order by id",
+      store,
+      [sqlight.text(player)],
+      decode.field(0, decode.string, decode.success),
+    )
+    |> result.unwrap([])
+  let assert Ok(_) =
+    sqlight.query(
+      "update items set holder = null, room_id = ? where holder = ?",
+      store,
+      [sqlight.int(room_id), sqlight.text(player)],
+      decode.success(Nil),
+    )
+  names
+}
+
+/// The tools a player carries, as (name, kind).
+pub fn carried_tools(store: Store, player: String) -> List(#(String, String)) {
+  carried_item_rows(store, player)
+  |> list.filter_map(fn(row) {
+    case row.role, row.unlocks {
+      "tool", Some(kind) -> Ok(#(row.name, kind))
+      _, _ -> Error(Nil)
+    }
+  })
 }
 
 /// Remember that this player has been here (for their map).

@@ -108,6 +108,9 @@ type Model {
     log: List(Entry),
     room: Option(RoomView),
     inventory: List(protocol.ItemView),
+    /// Wounds taken, of the most a player can take.
+    wounds: Int,
+    max_wounds: Int,
     /// The full history, opened on demand (the screen shows the latest).
     journal_open: Bool,
     /// Just moved (or moving): the new room's picture is what to show, so
@@ -199,6 +202,8 @@ fn init(_) -> #(Model, Effect(Msg)) {
       log: [],
       room: None,
       inventory: [],
+      wounds: 0,
+      max_wounds: 3,
       journal_open: False,
       on_the_move: False,
       dev_tools: False,
@@ -617,6 +622,10 @@ fn receive(model: Model, msg: ServerMsg) -> #(Model, Effect(Msg)) {
       Model(..model, inventory: items),
       effect.none(),
     )
+    protocol.Health(wounds, max) -> #(
+      Model(..model, wounds:, max_wounds: max),
+      effect.none(),
+    )
   }
 }
 
@@ -733,6 +742,7 @@ fn view_game(model: Model) -> Element(Msg) {
           html.div([class("columns")], [
             html.div([class("main-col")], [
               view_scene(room),
+              view_encounter(model, room),
               view_chronicle(model),
               view_souls(room),
               view_curios(room),
@@ -802,6 +812,7 @@ fn view_topbar(model: Model) -> Element(Msg) {
       None -> element.none()
     },
     html.div([class("topbar-right")], [
+      view_health(model),
       view_lantern_gauge(model),
       icon_button("map", "Map", OpenMap),
       icon_button("history_edu", "Journal", ToggleJournal),
@@ -816,6 +827,99 @@ fn view_topbar(model: Model) -> Element(Msg) {
 }
 
 /// The carried lantern's oil, if there is one.
+/// Hearts: one per wound you can still take.
+fn view_health(model: Model) -> Element(Msg) {
+  let left = int.max(0, model.max_wounds - model.wounds)
+  html.div(
+    [
+      class(case model.wounds {
+        0 -> "health"
+        _ -> "health hurt"
+      }),
+      attribute.title(case model.wounds {
+        0 -> "Unhurt"
+        n ->
+          int.to_string(n)
+          <> " of "
+          <> int.to_string(model.max_wounds)
+          <> " wounds: rest at the Lantern Crossroads, or they heal slowly"
+      }),
+    ],
+    list.append(
+      list.repeat(html.span([class("heart full")], [icon("favorite")]), left),
+      list.repeat(
+        html.span([class("heart empty")], [icon("heart_broken")]),
+        model.max_wounds - left,
+      ),
+    ),
+  )
+}
+
+/// A creature in the way: what it is, how much fight it has left, and
+/// what you can do about it.
+fn view_encounter(model: Model, room: RoomView) -> Element(Msg) {
+  case room.foe {
+    None -> element.none()
+    Some(foe) -> {
+      let has_light =
+        list.any(model.inventory, fn(i) {
+          i.role == "light" && i.note != "out of oil"
+        })
+      html.section([class("card encounter"), attribute.id("encounter")], [
+        html.div([class("encounter-picture")], [
+          case foe.art {
+            Some(url) -> html.img([attribute.src(url), attribute.alt(foe.name)])
+            None -> html.span([class("encounter-glyph")], [icon("pets")])
+          },
+        ]),
+        html.div([class("encounter-body")], [
+          html.div([class("card-head")], [
+            html.h2([], [icon("swords"), text(foe.name)]),
+            html.span(
+              [class("pips"), attribute.title("How much fight it has left")],
+              list.append(
+                list.repeat(html.span([class("pip on")], []), foe.left),
+                list.repeat(
+                  html.span([class("pip")], []),
+                  foe.strength - foe.left,
+                ),
+              ),
+            ),
+          ]),
+          html.p([class("encounter-line")], [text(foe.line)]),
+          html.div([class("encounter-actions")], [
+            html.button(
+              [class("action primary"), event.on_click(Run("fight"))],
+              [
+                icon("swords"),
+                text("Fight"),
+              ],
+            ),
+            html.button([class("action"), event.on_click(Run("flee"))], [
+              icon("directions_run"),
+              text("Flee"),
+            ]),
+            case has_light {
+              True ->
+                html.button(
+                  [
+                    class(case foe.fears_light {
+                      True -> "action light-hint"
+                      False -> "action"
+                    }),
+                    event.on_click(Run("raise lantern")),
+                  ],
+                  [icon("wb_incandescent"), text("Raise lantern")],
+                )
+              False -> element.none()
+            },
+          ]),
+        ]),
+      ])
+    }
+  }
+}
+
 fn view_lantern_gauge(model: Model) -> Element(Msg) {
   case list.find(model.inventory, fn(i) { i.role == "light" }) {
     Error(Nil) -> element.none()
@@ -1272,13 +1376,33 @@ fn view_glimpse(model: Model) -> Element(Msg) {
 }
 
 fn view_commandbar(model: Model) -> Element(Msg) {
-  let quick = [
-    #("Look", "look"),
-    #("Inventory", "inventory"),
-    #("Dig", "dig"),
-    #("Fill lantern", "fill lantern"),
-    #("Help", "help"),
-  ]
+  let in_danger = case model.room {
+    Some(protocol.RoomView(foe: Some(_), ..)) -> True
+    _ -> False
+  }
+  let quick = case in_danger, model.wounds {
+    True, _ -> [
+      #("Fight", "fight"),
+      #("Flee", "flee"),
+      #("Raise lantern", "raise lantern"),
+      #("Look", "look"),
+    ]
+    False, 0 -> [
+      #("Look", "look"),
+      #("Inventory", "inventory"),
+      #("Dig", "dig"),
+      #("Fill lantern", "fill lantern"),
+      #("Help", "help"),
+    ]
+    False, _ -> [
+      #("Look", "look"),
+      #("Rest", "rest"),
+      #("Inventory", "inventory"),
+      #("Dig", "dig"),
+      #("Fill lantern", "fill lantern"),
+      #("Help", "help"),
+    ]
+  }
   html.footer([class("commandbar")], [
     html.div([class("quick")], [
       html.span([class("quick-label")], [text("Quick")]),

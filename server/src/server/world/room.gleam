@@ -12,6 +12,8 @@ import gleam/otp/actor
 import gleam/result
 import gleam/string
 import server/art
+import server/world/builder
+import server/world/danger
 import server/world/store.{type Store}
 import server/world/types.{type Direction, type Room}
 import shared/protocol.{
@@ -40,6 +42,36 @@ pub type Message {
   /// Shut down (world reset). A normal exit, so the linked world registry
   /// carries on; killing the process would take the registry down with it.
   Stop
+  /// A round against the creature here.
+  Fight(name: String, reply: fn(Outcome) -> Nil)
+  /// Raise a lit lantern at it.
+  Brandish(name: String, reply: fn(Outcome) -> Nil)
+  /// Run from it (the session then takes the player back the way they came).
+  Flee(name: String, reply: fn(Outcome) -> Nil)
+  /// A creature's picture is ready.
+  FoeArt(kind: String, url: String)
+}
+
+/// How a round went, for the player's session.
+pub type Outcome {
+  NoFoe
+  /// A blow landed; `defeated` if it drove the creature off.
+  Struck(defeated: Bool)
+  /// The creature hurt you: you now have `wounds`.
+  Hurt(wounds: Int)
+  /// The last wound: you're down, and what you carried is left here.
+  Collapsed
+  /// Your lantern drove it off.
+  Drove
+  NoLight
+  NotAfraid
+  /// Got away (perhaps hurt on the way): now go.
+  Escaped(wounds: Int)
+}
+
+/// A creature in the room, and how many more hits it takes.
+type Foe {
+  Foe(creature: danger.Creature, left: Int, line: String, art: Option(String))
 }
 
 type State {
@@ -54,6 +86,9 @@ type State {
     /// way out they can find.
     entered: Dict(String, Direction),
     art_requested: Bool,
+    /// A creature everyone here faces, until it's driven off or nobody's
+    /// left (it wanders away).
+    foe: Option(Foe),
   )
 }
 
@@ -73,6 +108,7 @@ pub fn start(
         owners: dict.new(),
         entered: dict.new(),
         art_requested: False,
+        foe: None,
       )
       |> actor.initialised
       |> actor.returning(self)
@@ -91,6 +127,26 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     LookToward(name, _) -> Some(#(name, "It's too dark to see that way."))
     _ -> None
   }
+  // Nothing gets picked up or put down with a creature at your heels.
+  let busy = case message, state.foe {
+    Take(name, _), Some(foe) | Drop(name, _), Some(foe) ->
+      Some(#(name, "Not with the " <> foe.creature.name <> " on you!"))
+    _, _ -> None
+  }
+  case busy {
+    Some(#(name, refusal)) -> {
+      tell(state, name, Line(System, refusal))
+      actor.continue(state)
+    }
+    None -> handle_sighted(state, message, needs_sight)
+  }
+}
+
+fn handle_sighted(
+  state: State,
+  message: Message,
+  needs_sight: Option(#(String, String)),
+) -> actor.Next(State, Message) {
   case needs_sight {
     Some(#(name, refusal)) ->
       case sees(state, name) {
@@ -129,6 +185,20 @@ fn handle_seen(state: State, message: Message) -> actor.Next(State, Message) {
         ])
       describe(state, name, notify)
       refresh_except(state, name)
+      let state = case state.foe, from {
+        // Already here: the newcomer faces it too.
+        Some(foe), _ -> {
+          tell(
+            state,
+            name,
+            Line(Narration, "The " <> foe.creature.name <> " is here!"),
+          )
+          state
+        }
+        // Walking in (not waking up here) may meet something.
+        None, Some(_) -> meet(state)
+        None, None -> state
+      }
       request_art(state) |> actor.continue
     }
 
@@ -138,11 +208,17 @@ fn handle_seen(state: State, message: Message) -> actor.Next(State, Message) {
         // leaving.
         False -> actor.continue(state)
         True -> {
+          let occupants = list.filter(state.occupants, fn(o) { o.0 != name })
           let state =
             State(
               ..state,
-              occupants: list.filter(state.occupants, fn(o) { o.0 != name }),
+              occupants:,
               owners: dict.delete(state.owners, name),
+              // With nobody left to bother, it wanders off.
+              foe: case occupants {
+                [] -> None
+                _ -> state.foe
+              },
             )
           let text = case toward {
             Some(d) -> name <> " leaves " <> types.direction_name(d) <> "."
@@ -265,6 +341,286 @@ fn handle_seen(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     Stop -> actor.stop()
+
+    Fight(name, reply) ->
+      case state.foe {
+        None -> {
+          tell(state, name, Line(System, "There's nothing here to fight."))
+          reply(NoFoe)
+          actor.continue(state)
+        }
+        Some(foe) -> fight(state, foe, name, reply) |> actor.continue
+      }
+
+    Brandish(name, reply) ->
+      case state.foe, store.carried_light(state.store, name) {
+        None, _ -> {
+          tell(state, name, Line(System, "There's nothing here to scare off."))
+          reply(NoFoe)
+          actor.continue(state)
+        }
+        Some(_), None | Some(_), Some(#(_, _, 0)) -> {
+          tell(state, name, Line(System, "You have no lit lantern to raise."))
+          reply(NoLight)
+          actor.continue(state)
+        }
+        Some(foe), Some(#(_, light, _)) ->
+          case foe.creature.fears_light {
+            False -> {
+              tell(
+                state,
+                name,
+                Line(
+                  Narration,
+                  "You raise the "
+                    <> light
+                    <> ". The "
+                    <> foe.creature.name
+                    <> " squints into it, and doesn't back off an inch.",
+                ),
+              )
+              reply(NotAfraid)
+              actor.continue(state)
+            }
+            True -> {
+              let _ = store.burn(state.store, name)
+              tell(
+                state,
+                name,
+                Line(
+                  Narration,
+                  "You thrust the "
+                    <> light
+                    <> " forward and turn the flame up high. The "
+                    <> foe.creature.name
+                    <> " recoils from the glare and is gone.",
+                ),
+              )
+              broadcast_except(
+                state,
+                name,
+                Line(
+                  Social,
+                  name
+                    <> " drives off the "
+                    <> foe.creature.name
+                    <> " with a blaze of lantern light.",
+                ),
+              )
+              let state = State(..state, foe: None)
+              refresh_all(state)
+              reply(Drove)
+              actor.continue(state)
+            }
+          }
+      }
+
+    Flee(name, reply) ->
+      case state.foe {
+        None -> {
+          reply(Escaped(store.wounds(state.store, name)))
+          actor.continue(state)
+        }
+        Some(foe) ->
+          case int.random(100) < foe.creature.flee_risk {
+            False -> {
+              tell(state, name, Line(Narration, "You turn and run."))
+              reply(Escaped(store.wounds(state.store, name)))
+              actor.continue(state)
+            }
+            // Hurt on the way out, but away (unless that was the last wound).
+            True ->
+              wound(state, foe, name, "as you turn to run", reply)
+              |> actor.continue
+          }
+      }
+
+    FoeArt(kind, url) ->
+      case state.foe {
+        Some(foe) if foe.creature.kind == kind -> {
+          let state = State(..state, foe: Some(Foe(..foe, art: Some(url))))
+          refresh_all(state)
+          actor.continue(state)
+        }
+        _ -> actor.continue(state)
+      }
+  }
+}
+
+/// Roll for something waiting here, and if so, bring it on.
+fn meet(state: State) -> State {
+  let room = state.room
+  case
+    danger.roll_encounter(
+      room.z,
+      room.region,
+      builder.tier(types.cell(room)),
+      room.dark,
+    )
+  {
+    None -> state
+    Some(creature) -> {
+      let line =
+        danger.pick(creature.arrives)
+        |> option.unwrap("Something comes at you out of the fog.")
+      let self = state.self
+      art.creature(
+        state.art,
+        state.store,
+        creature.kind,
+        creature.looks,
+        fn(url) { process.send(self, FoeArt(creature.kind, url)) },
+      )
+      let state =
+        State(
+          ..state,
+          foe: Some(Foe(creature:, left: creature.strength, line:, art: None)),
+        )
+      refresh_all(state)
+      broadcast(state, Line(Narration, line))
+      state
+    }
+  }
+}
+
+/// One round: a die, plus your best tool, against its strength.
+fn fight(
+  state: State,
+  foe: Foe,
+  name: String,
+  reply: fn(Outcome) -> Nil,
+) -> State {
+  let tools = store.carried_tools(state.store, name)
+  let bonus = danger.weapon_bonus(list.map(tools, fn(t) { t.1 }))
+  let with = case danger.weapon(tools) {
+    Some(tool) -> " with the " <> tool
+    None -> ""
+  }
+  let creature = foe.creature
+  case danger.hits(danger.roll_die(), bonus, creature.strength) {
+    False -> wound(state, foe, name, "past your guard", reply)
+    True ->
+      case foe.left - 1 {
+        0 -> {
+          tell(
+            state,
+            name,
+            Line(
+              Narration,
+              "You strike"
+                <> with
+                <> ". The "
+                <> creature.name
+                <> " has had enough, and flees!",
+            ),
+          )
+          broadcast_except(
+            state,
+            name,
+            Line(Social, name <> " drives off the " <> creature.name <> "."),
+          )
+          let state = State(..state, foe: None)
+          refresh_all(state)
+          reply(Struck(True))
+          state
+        }
+        left -> {
+          tell(
+            state,
+            name,
+            Line(
+              Narration,
+              "Your blow lands"
+                <> with
+                <> ". The "
+                <> creature.name
+                <> " falters.",
+            ),
+          )
+          broadcast_except(
+            state,
+            name,
+            Line(
+              Social,
+              name <> " lands a blow on the " <> creature.name <> ".",
+            ),
+          )
+          let state = State(..state, foe: Some(Foe(..foe, left:)))
+          refresh_all(state)
+          reply(Struck(False))
+          state
+        }
+      }
+  }
+}
+
+/// The creature hurts a player; the last wound puts them down, and what
+/// they carried stays here.
+fn wound(
+  state: State,
+  foe: Foe,
+  name: String,
+  how: String,
+  reply: fn(Outcome) -> Nil,
+) -> State {
+  let creature = foe.creature
+  let wounds = store.add_wound(state.store, name)
+  case wounds >= danger.max_wounds {
+    False -> {
+      tell(
+        state,
+        name,
+        Line(
+          Narration,
+          "The "
+            <> creature.name
+            <> " gets at you "
+            <> how
+            <> ". You're hurt ("
+            <> int.to_string(wounds)
+            <> " of "
+            <> int.to_string(danger.max_wounds)
+            <> " wounds).",
+        ),
+      )
+      broadcast_except(
+        state,
+        name,
+        Line(Social, "The " <> creature.name <> " wounds " <> name <> "."),
+      )
+      reply(Hurt(wounds))
+      state
+    }
+    True -> {
+      let dropped = store.drop_all(state.store, state.room.id, name)
+      tell(
+        state,
+        name,
+        Line(
+          Narration,
+          "The "
+            <> creature.name
+            <> " is too much for you. Everything goes black…",
+        ),
+      )
+      broadcast_except(
+        state,
+        name,
+        Line(
+          Social,
+          name
+            <> " collapses"
+            <> case dropped {
+            [] -> "."
+            _ -> ", and what they carried spills across the ground."
+          },
+        ),
+      )
+      let state = reload(state)
+      refresh_all(state)
+      reply(Collapsed)
+      state
+    }
   }
 }
 
@@ -425,6 +781,7 @@ fn view(state: State, for: String) -> protocol.RoomView {
         others:,
         art: room.art_url,
         dark: False,
+        foe: foe_view(state),
       )
     // In the dark: no description, picture or items, and only the way
     // you came in (or, if you didn't come in, say after logging in here,
@@ -455,8 +812,23 @@ fn view(state: State, for: String) -> protocol.RoomView {
         others:,
         art: None,
         dark: True,
+        foe: foe_view(state),
       )
   }
+}
+
+fn foe_view(state: State) -> Option(protocol.FoeView) {
+  option.map(state.foe, fn(foe) {
+    protocol.FoeView(
+      kind: foe.creature.kind,
+      name: foe.creature.name,
+      line: foe.line,
+      strength: foe.creature.strength,
+      left: foe.left,
+      fears_light: foe.creature.fears_light,
+      art: foe.art,
+    )
+  })
 }
 
 fn tell(state: State, name: String, msg: ServerMsg) {
