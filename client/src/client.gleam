@@ -720,9 +720,10 @@ fn bool_guard(when: Bool, then: fn() -> a, otherwise: fn() -> a) -> a {
 /// The game screen (after the Stitch "Blackfriars Wynd" design): a top bar
 /// and the place's name; the scene with its ways out labelled on it; the
 /// chronicle of what just happened (newest largest, full history in the
-/// journal); who and what is here; a compass, the satchel and a glimpse
-/// along a way out; and the command line. On a phone the panels stack, with
-/// tabs at the bottom to jump between them.
+/// journal); who is here; a compass, the curios to take (just above the
+/// satchel they'd go into) and a glimpse along a way out; and the command
+/// line. On a phone the panels stack, with tabs at the bottom to jump
+/// between them.
 fn view_game(model: Model) -> Element(Msg) {
   html.div([class("shell")], [
     case model.map {
@@ -745,10 +746,10 @@ fn view_game(model: Model) -> Element(Msg) {
               view_encounter(model, room),
               view_chronicle(model),
               view_souls(room),
-              view_curios(room),
             ]),
             html.aside([class("side-col")], [
               view_compass(room),
+              view_curios(room),
               view_satchel(model),
               view_glimpse(model),
               html.div([class("wide-only")], [view_dev_tools(model)]),
