@@ -260,15 +260,13 @@ pub fn image_prompt_test() {
   assert art.image_prompt(none)
     == art.style <> ". The Quay: wet stones, moored barges, gulls."
   // Below or above the streets, the prompt says so before the scene.
-  let cavern =
-    types.Room(..room_with(5, []), z: -2, picture: "A vast, still pool.")
-  assert art.image_prompt(cavern)
+  let tunnel =
+    types.Room(..room_with(5, []), z: -1, picture: "A vast, still pool.")
+  assert art.image_prompt(tunnel)
     == art.style
-    <> ". Interior of a vast underground cavern, dark stone vault overhead, lantern light. A vast, still pool."
-  let tunnel = types.Room(..room_with(6, []), z: -1, picture: "A tunnel.")
-  assert string.contains(art.image_prompt(tunnel), "underground passage")
-  let roof = types.Room(..room_with(7, []), z: 1, picture: "A ridge.")
-  assert string.contains(art.image_prompt(roof), "High above the city")
+    <> ". Interior of an underground passage beneath the city, arched stone ceiling overhead, lantern light. A vast, still pool."
+  let upstairs = types.Room(..room_with(7, []), z: 1, picture: "A garret.")
+  assert string.contains(art.image_prompt(upstairs), "high above the city")
 }
 
 pub fn closeup_prompt_test() {
@@ -539,4 +537,21 @@ pub fn bearing_and_map_code_test() {
   assert types.bearing(#(0, 0, 0), #(-1, 0, 0)) == "about 1 west of here"
   assert store.map_target(store.map_code(#(3, -2, -1))) == Ok(#(3, -2, -1))
   assert store.map_target("lock-4-north") == Error(Nil)
+}
+
+pub fn three_levels_test() {
+  let exits = [
+    #("north", "a lane"),
+    #("up", "a stair"),
+    #("down", "a grate"),
+  ]
+  // Upstairs is a dead end: no ways on at all.
+  assert builder.allowed_exits(exits, 1, True) == []
+  // Underground: no way further down; up (to the street) is fine.
+  assert builder.allowed_exits(exits, -1, False)
+    == [#("north", "a lane"), #("up", "a stair")]
+  // Streets: down always; up only when this place was allowed one.
+  assert builder.allowed_exits(exits, 0, False)
+    == [#("north", "a lane"), #("down", "a grate")]
+  assert builder.allowed_exits(exits, 0, True) == exits
 }

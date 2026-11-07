@@ -150,11 +150,9 @@ pub fn image_prompt(room: Room) -> String {
 pub fn level(z: Int) -> String {
   case z {
     0 -> ""
-    z if z <= -2 ->
-      "Interior of a vast underground cavern, dark stone vault overhead, lantern light. "
     z if z < 0 ->
       "Interior of an underground passage beneath the city, arched stone ceiling overhead, lantern light. "
-    _ -> "High above the city, among rooftops and chimneys. "
+    _ -> "An upper room or rooftop, high above the city streets. "
   }
 }
 

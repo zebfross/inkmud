@@ -214,6 +214,8 @@ type Context {
     required: List(store.Pending),
     /// Height of the new place: below 0 is underground.
     level: Int,
+    /// Whether this street-level place may have a way up (rarely).
+    up_ok: Bool,
   )
 }
 
@@ -311,7 +313,10 @@ fn invent(
   }
   let required =
     list.flatten([store.pending_at(store, target), gift, treasure_map])
-  let want_lock = int.random(100) < odds.lock
+  // Upstairs is a dead end: nothing to lock there.
+  let want_lock = level < 1 && int.random(100) < odds.lock
+  // Ways up are rare: only now and then may a street place have one.
+  let up_ok = level == 0 && int.random(100) < up_chance
   let prompt =
     prompt(
       store,
@@ -323,6 +328,7 @@ fn invent(
       required,
       want_lock,
       level,
+      up_ok,
       dark,
     )
   let ctx =
@@ -334,6 +340,7 @@ fn invent(
       from_description: from.description,
       required:,
       level:,
+      up_ok:,
     )
   let #(proposal, build_log) = propose(ctx, attempts)
   // The model can insist on a name through every retry; and two rooms built
@@ -910,20 +917,62 @@ fn place_lock(
   }
 }
 
+/// The city has three levels: the underground (−1), the streets (0) and
+/// upstairs (+1). The underground is one connected network; upstairs is a
+/// dead end, a single room you climb to and come back down from.
+pub const lowest_level = -1
+
+pub const highest_level = 1
+
+/// Percent of street-level places that may have a way up.
+pub const up_chance = 20
+
 /// What a place at this height has to be. Going down from the streets
-/// leads underground, never to another street; going up leads above them.
+/// leads underground, never to another street; going up leads to one room
+/// upstairs.
 fn level_rule(level: Int) -> String {
   case level {
     0 -> "This place is at street level."
     _ if level < 0 ->
-      "This place is "
-      <> int.to_string(-level)
-      <> " level(s) below the streets: it must be underground — a sewer, tunnel, cellar, crypt, cistern or cavern. No sky, no streets, no alleys, no shopfronts."
+      "This place is below the streets: it must be underground, a sewer, tunnel, cellar, crypt, cistern or cavern. No sky, no streets, no alleys, no shopfronts. There is no way further down."
     _ ->
-      "This place is "
-      <> int.to_string(level)
-      <> " level(s) above the streets: rooftops, an upper floor, a bell tower, a bridge or a high walkway, looking down on the city."
+      "This place is upstairs, one floor above the street: an upper room, a garret, a loft, a belfry or a rooftop reached from below, looking down on the city. There is no way further up and no way on: the only way out is back down."
   }
+}
+
+/// The ways out a place at this level may have (the way back is separate).
+/// Upstairs has none; the underground has no way further down; and only
+/// some street places (`up_ok`) have a way up.
+pub fn allowed_exits(
+  exits: List(#(String, String)),
+  level: Int,
+  up_ok: Bool,
+) -> List(#(String, String)) {
+  case level >= highest_level {
+    True -> []
+    False ->
+      list.filter(exits, fn(e) {
+        case e.0 {
+          "down" -> level > lowest_level
+          "up" -> level < 0 || up_ok
+          _ -> True
+        }
+      })
+  }
+}
+
+/// The directions to offer the model for a place at this level.
+fn exit_choices(level: Int, up_ok: Bool) -> String {
+  ["north", "south", "east", "west"]
+  |> list.append(case level < 0 || up_ok {
+    True -> ["up"]
+    False -> []
+  })
+  |> list.append(case level > lowest_level {
+    True -> ["down"]
+    False -> []
+  })
+  |> string.join("|")
 }
 
 /// An underground place that describes streets or sky: not underground.
@@ -948,6 +997,7 @@ fn prompt(
   required: List(store.Pending),
   want_lock: Bool,
   level: Int,
+  up_ok: Bool,
   dark: Bool,
 ) -> String {
   let used = case list.take(list.reverse(store.room_names(store)), 40) {
@@ -1011,12 +1061,22 @@ fn prompt(
   <> "\"description\": \"2-4 sentences, second person present tense\", "
   <> "\"picture\": \"one plain sentence, under 25 words, describing what a painting of this place shows (the place itself, its light and its main features); nothing that isn't in the description\", "
   <> "\"features\": [\"3-5 short visual details, including any objects here\"], "
-  <> "\"exits\": [{\"direction\": \"north|south|east|west|up|down\", \"hint\": \"short phrase: what you see of that way out\"}]}"
+  <> case level >= highest_level {
+    True -> "\"exits\": []}"
+    False ->
+      "\"exits\": [{\"direction\": \""
+      <> exit_choices(level, up_ok)
+      <> "\", \"hint\": \"short phrase: what you see of that way out\"}]}"
+  }
   <> "\nThe description must mention every visual detail, and should hint at each way out without listing directions."
   <> " A way down must look like a way down (stairs, a ladder, a grate, a hatch, a hole) and a way up like a way up."
-  <> case want_lock {
-    True -> ""
-    False -> "\nGive 1 to 3 exits."
+  <> case level >= highest_level, want_lock, up_ok {
+    True, _, _ ->
+      "\nGive no exits: the only way out is back down the way the player came."
+    _, True, _ -> ""
+    _, False, True ->
+      "\nGive 1 to 3 exits. This place may have a way up (stairs inside a building, a fire escape, a belfry ladder), but only if it fits."
+    _, False, False -> "\nGive 1 to 3 exits."
   }
   <> " Do not use the direction \""
   <> types.direction_name(back)
@@ -1070,6 +1130,11 @@ fn attempt(
         Ok(text) ->
           case parse(text, ctx.back) {
             Ok(proposal) -> {
+              let proposal =
+                Proposal(
+                  ..proposal,
+                  exits: allowed_exits(proposal.exits, ctx.level, ctx.up_ok),
+                )
               let duplicate =
                 list.contains(ctx.taken, string.lowercase(proposal.name))
               let copied = repeats(proposal.description, ctx.from_description)

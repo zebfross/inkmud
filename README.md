@@ -92,8 +92,12 @@ browser (Lustre) ──websocket──▶ Gleam server
   in a tin of oil (which turns up in rooms once lanterns exist). Whenever a
   dark place is built and no lantern is free, one is promised to an unbuilt
   street-level place, which is never dark.
-- **Levels mean something.** Below street level is always underground
-  (sewers, tunnels, cellars, crypts); above is rooftops, towers, bridges.
+- **Three levels.** The streets; below them one connected underground
+  (sewers, tunnels, cellars, crypts), with no way further down; and
+  upstairs, a single room (a loft, a garret, a belfry) you climb to and come
+  back down from. Ways up are rare (`builder.up_chance`). The engine drops
+  any way out a level doesn't allow, and each picture prompt says which
+  level it's on.
 - **Your map** (the Map button) shows the rooms you've visited at their grid
   positions, each floor a tilted plane stacked above the one below.
 - **Engine owns the truth.** The model proposes rooms in a fixed JSON shape;
